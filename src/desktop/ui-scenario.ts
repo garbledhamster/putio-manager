@@ -112,17 +112,27 @@ export async function runUiScenario(window: BrowserWindow, remote: { url: string
     if (!loaded) throw new Error("A local Heroicons SVG did not decode from its file URL.");
     await evaluate(`(() => { const test = document.createElement('div'); test.id = 'mask-fixture'; test.style.cssText = 'position:fixed;z-index:99999;left:0;top:0;width:48px;height:48px;background:white'; const icon = document.createElement('span'); icon.className = 'ui-icon ui-icon--folder'; icon.style.cssText = 'display:block;width:48px;height:48px;color:rgb(255,0,0)'; test.append(icon); document.body.append(test); })()`);
     let red = 0;
+    let lastCaptureFailure = "";
     for (let attempt = 0; attempt < 5 && red < 10; attempt++) {
       await evaluate("Promise.race([new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))), new Promise(resolve => setTimeout(resolve, 1000))])");
       window.webContents.invalidate();
       await new Promise(resolve => setTimeout(resolve, 200));
-      const bitmap = (await window.webContents.capturePage({ x: 0, y: 0, width: 48, height: 48 })).toBitmap();
+      let bitmap: Buffer;
+      try {
+        bitmap = (await window.webContents.capturePage({ x: 0, y: 0, width: 48, height: 48 })).toBitmap();
+      } catch (error) {
+        // Xvfb can have no capturable compositor surface during the first paint.
+        // Retry that capture within the existing bounded repaint loop, never the assertion.
+        if (!(error instanceof Error) || error.message !== "UnknownVizError") throw error;
+        lastCaptureFailure = error.message;
+        continue;
+      }
       red = 0;
       for (let i = 0; i < bitmap.length; i += 4) if (bitmap[i + 2] > 220 && bitmap[i + 1] < 60 && bitmap[i] < 60) red++;
     }
     await evaluate("document.querySelector('#mask-fixture').remove()");
     console.log(`Local SVG mask rendered: ${red} red pixels.`);
-    if (red < 10 || red > 2100) throw new Error(`Heroicons mask did not visibly render (${red} red pixels).`);
+    if (red < 10 || red > 2100) throw new Error(`Heroicons mask did not visibly render (${red} red pixels).${lastCaptureFailure ? ` Last capture failure: ${lastCaptureFailure}.` : ""}`);
   };
   await waitFor(
     "Boolean(window.putio && document.querySelector('#nav-settings') && document.querySelector('#setup-general'))",

@@ -7,7 +7,9 @@ const { startRemoteServer } = require('../../dist/server/server');
 const { RemoteEngine } = require('../../dist/remote/client');
 const credentials = { available: () => false, encrypt: () => { throw Error('unexpected'); }, decrypt: () => { throw Error('unexpected'); } };
 async function withEngine(t, mode, scenario) {
-  const dir = scenario.staging ? await privateTemp(path.join(os.tmpdir(), 'resilience-')) : await fs.mkdtemp(path.join(os.tmpdir(), 'resilience-'));
+  const temporary = scenario.staging ? await privateTemp(path.join(os.tmpdir(), 'resilience-')) : await fs.mkdtemp(path.join(os.tmpdir(), 'resilience-'));
+  // Match the engine's canonical paths when TEMP is an alias or macOS uses /var.
+  const dir = await fs.realpath(temporary);
   const root = path.join(dir, 'root'); await fs.mkdir(root);
   const stage = scenario.staging ? path.join(dir, 'stage') : undefined; if(stage) await fs.mkdir(stage);
   let deleted = [];
