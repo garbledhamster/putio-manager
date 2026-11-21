@@ -1,0 +1,97 @@
+name: Publish verified downloads
+on:
+  workflow_dispatch:
+    inputs:
+      build_run_id:
+        description: Successful Build native downloads run ID to publish
+        required: true
+        type: string
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: publish-release
+  cancel-in-progress: false
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    outputs:
+      sha: ${{ steps.build.outputs.sha }}
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Require a successful build from this repository
+        id: build
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          BUILD_RUN_ID: ${{ inputs.build_run_id }}
+        shell: bash
+        run: |
+          [[ "$BUILD_RUN_ID" =~ ^[0-9]+$ ]]
+          gh api "repos/$GH_REPO/actions/runs/$BUILD_RUN_ID" > "$RUNNER_TEMP/build-run.json"
+          jq -e --arg repo "$GH_REPO" '.head_repository.full_name == $repo and .path == ".github/workflows/build.yml" and .status == "completed" and .conclusion == "success" and .head_branch == "main" and (.event == "push" or .event == "workflow_dispatch")' "$RUNNER_TEMP/build-run.json"
+          echo "sha=$(jq -r .head_sha "$RUNNER_TEMP/build-run.json")" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ steps.build.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: reviewed-release-bundle
+          path: release-assets
+          run-id: ${{ inputs.build_run_id }}
+          github-token: ${{ github.token }}
+      - run: npm run release:checksums -- --verify
+      - name: Verify source and exact archives again
+        shell: bash
+        run: |
+          node scripts/verify-public-release.mjs source
+          for archive in release-assets/PutioManager-*; do
+            node scripts/verify-public-release.mjs artifact "$archive"
+          done
+      - id: version
+        shell: bash
+        run: echo "version=$(node -p 'require("./package.json").version')" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: publication-bundle
+          path: release-assets/*
+          if-no-files-found: error
+          retention-days: 14
+  publish:
+    needs: validate
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: publication-bundle
+          path: release-assets
+      - name: Publish the verified version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+          RELEASE_SHA: ${{ needs.validate.outputs.sha }}
+        shell: bash
+        run: |
+          [[ "$RELEASE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          [[ "$RELEASE_SHA" =~ ^[a-f0-9]{40}$ ]]
+          if gh api "repos/$GH_REPO/git/ref/tags/v$RELEASE_VERSION" > /dev/null 2>&1; then
+            echo "This version already has a tag. Choose a new version rather than changing an existing release."
+            exit 1
+          fi
+          cat > "$RUNNER_TEMP/release-notes.md" <<'NOTES'
+          Portable Putio Manager desktop and remote-download server bundles for Windows, macOS and Linux, each in x64 and ARM64 editions.
+
+          These downloads are unsigned. Each archive includes the matching Node runtime, desktop app, headless engine, setup guide and licenses. See the README for setup, safe account linking and Linux service instructions. Verify downloads against SHA256SUMS.txt.
+
+          Documentation images use generated demonstration data.
+          NOTES
+          gh release create "v$RELEASE_VERSION" release-assets/* --repo "$GH_REPO" --target "$RELEASE_SHA" --title "Putio Manager $RELEASE_VERSION" --notes-file "$RUNNER_TEMP/release-notes.md"
+

@@ -1,0 +1,103 @@
+name: Build native downloads
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: native-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [windows-2022, windows-11-arm, macos-15-intel, macos-15, ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm audit --audit-level=moderate
+      - run: npm run verify:public
+      - name: Materialize the native Electron runtime
+        run: node node_modules/electron/install.js
+      - name: Configure Linux test sandbox
+        if: runner.os == 'Linux'
+        run: sudo chown root:root node_modules/electron/dist/chrome-sandbox && sudo chmod 4755 node_modules/electron/dist/chrome-sandbox
+      - run: npm run typecheck
+      - run: npm run build
+      - run: npm test
+      - run: npm run test:ui-assets
+      - run: xvfb-run -a npm run test:ui
+        if: runner.os == 'Linux'
+      - run: npm run test:ui
+        if: runner.os != 'Linux'
+      - run: npm run package
+      - name: Configure packaged Linux test sandbox
+        if: runner.os == 'Linux'
+        run: sudo chown root:root release/PutioManager-linux-*/chrome-sandbox && sudo chmod 4755 release/PutioManager-linux-*/chrome-sandbox
+      - run: xvfb-run -a npm run test:package
+        if: runner.os == 'Linux'
+      - run: npm run test:package
+        if: runner.os != 'Linux'
+      - run: npm run package:distribution
+      - run: npm run test:distribution
+      - name: Configure distributed Linux test sandbox
+        if: runner.os == 'Linux'
+        run: sudo chown root:root release/PutioManager-linux-*-distribution/desktop/chrome-sandbox && sudo chmod 4755 release/PutioManager-linux-*-distribution/desktop/chrome-sandbox
+      - run: xvfb-run -a npm run test:distribution:gui
+        if: runner.os == 'Linux'
+      - run: npm run test:distribution:gui
+        if: runner.os != 'Linux'
+      - name: Audit distribution contents
+        shell: bash
+        run: |
+          bundle=(release/*-distribution)
+          test "${#bundle[@]}" -eq 1
+          node scripts/verify-public-release.mjs artifact "${bundle[0]}"
+      - run: npm run release:archive
+      - name: Audit exact download archive
+        shell: bash
+        run: |
+          archives=(release-assets/PutioManager-*)
+          test "${#archives[@]}" -eq 1
+          node scripts/verify-public-release.mjs artifact "${archives[0]}"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: native-${{ runner.os }}-${{ runner.arch }}
+          path: release-assets/PutioManager-*
+          if-no-files-found: error
+          retention-days: 14
+  assemble:
+    needs: native
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: native-*
+          path: release-assets
+          merge-multiple: true
+      - run: npm run release:checksums
+      - run: npm run release:checksums -- --verify
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: reviewed-release-bundle
+          path: release-assets/*
+          if-no-files-found: error
+          retention-days: 14
+
