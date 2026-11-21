@@ -1,0 +1,1 @@
+Heroicons 2.2.0, optimized 24px outline SVGs, copied unmodified from https://github.com/tailwindlabs/heroicons/tree/v2.2.0/optimized/24/outline. Copyright Tailwind Labs, Inc. Distributed under the MIT license in LICENSE.

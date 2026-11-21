@@ -1,0 +1,27 @@
+/* Heroicons v2.2.0, MIT; see heroicons/LICENSE and heroicons/README.md. */
+.ui-icon { display: inline-block; flex: none; width: 1em; height: 1em; background-color: currentColor; mask-repeat: no-repeat; mask-position: center; mask-size: contain; -webkit-mask-repeat: no-repeat; -webkit-mask-position: center; -webkit-mask-size: contain; }
+.ui-icon--folder { mask-image: url('./heroicons/folder.svg'); -webkit-mask-image: url('./heroicons/folder.svg'); }
+.ui-icon--arrow-down-tray { mask-image: url('./heroicons/arrow-down-tray.svg'); -webkit-mask-image: url('./heroicons/arrow-down-tray.svg'); }
+.ui-icon--arrows-right-left { mask-image: url('./heroicons/arrows-right-left.svg'); -webkit-mask-image: url('./heroicons/arrows-right-left.svg'); }
+.ui-icon--adjustments-horizontal { mask-image: url('./heroicons/adjustments-horizontal.svg'); -webkit-mask-image: url('./heroicons/adjustments-horizontal.svg'); }
+.ui-icon--cog-6-tooth { mask-image: url('./heroicons/cog-6-tooth.svg'); -webkit-mask-image: url('./heroicons/cog-6-tooth.svg'); }
+.ui-icon--arrow-path { mask-image: url('./heroicons/arrow-path.svg'); -webkit-mask-image: url('./heroicons/arrow-path.svg'); }
+.ui-icon--pencil-square { mask-image: url('./heroicons/pencil-square.svg'); -webkit-mask-image: url('./heroicons/pencil-square.svg'); }
+.ui-icon--folder-plus { mask-image: url('./heroicons/folder-plus.svg'); -webkit-mask-image: url('./heroicons/folder-plus.svg'); }
+.ui-icon--archive-box-arrow-down { mask-image: url('./heroicons/archive-box-arrow-down.svg'); -webkit-mask-image: url('./heroicons/archive-box-arrow-down.svg'); }
+.ui-icon--trash { mask-image: url('./heroicons/trash.svg'); -webkit-mask-image: url('./heroicons/trash.svg'); }
+.ui-icon--x-mark { mask-image: url('./heroicons/x-mark.svg'); -webkit-mask-image: url('./heroicons/x-mark.svg'); }
+.ui-icon--plus { mask-image: url('./heroicons/plus.svg'); -webkit-mask-image: url('./heroicons/plus.svg'); }
+.ui-icon--check { mask-image: url('./heroicons/check.svg'); -webkit-mask-image: url('./heroicons/check.svg'); }
+.ui-icon--arrow-top-right-on-square { mask-image: url('./heroicons/arrow-top-right-on-square.svg'); -webkit-mask-image: url('./heroicons/arrow-top-right-on-square.svg'); }
+.ui-icon--document { mask-image: url('./heroicons/document.svg'); -webkit-mask-image: url('./heroicons/document.svg'); }
+.ui-icon--cloud { mask-image: url('./heroicons/cloud.svg'); -webkit-mask-image: url('./heroicons/cloud.svg'); }
+.ui-icon--server { mask-image: url('./heroicons/server.svg'); -webkit-mask-image: url('./heroicons/server.svg'); }
+.ui-icon--computer-desktop { mask-image: url('./heroicons/computer-desktop.svg'); -webkit-mask-image: url('./heroicons/computer-desktop.svg'); }
+.ui-icon--check-circle { mask-image: url('./heroicons/check-circle.svg'); -webkit-mask-image: url('./heroicons/check-circle.svg'); }
+.ui-icon--exclamation-circle { mask-image: url('./heroicons/exclamation-circle.svg'); -webkit-mask-image: url('./heroicons/exclamation-circle.svg'); }
+.ui-icon--chevron-right { mask-image: url('./heroicons/chevron-right.svg'); -webkit-mask-image: url('./heroicons/chevron-right.svg'); }
+.ui-icon--chevron-down { mask-image: url('./heroicons/chevron-down.svg'); -webkit-mask-image: url('./heroicons/chevron-down.svg'); }
+.ui-icon--pause { mask-image: url('./heroicons/pause.svg'); -webkit-mask-image: url('./heroicons/pause.svg'); }
+.ui-icon--play { mask-image: url('./heroicons/play.svg'); -webkit-mask-image: url('./heroicons/play.svg'); }
+.ui-icon--x-circle { mask-image: url('./heroicons/x-circle.svg'); -webkit-mask-image: url('./heroicons/x-circle.svg'); }

@@ -1,0 +1,13 @@
+node_modules/
+dist/
+release/
+release-assets/
+*.log
+.env
+.env.*
+*.key
+*.pem
+client-token
+credential-key
+config.json
+state/

@@ -1,0 +1,19 @@
+const {test}=require('node:test'); const assert=require('node:assert/strict'); const {spawn,spawnSync}=require('node:child_process'); const fs=require('node:fs'); const os=require('node:os'); const path=require('node:path'); const net=require('node:net'); const {randomBytes}=require('node:crypto');
+test('headless CLI rejects malformed invocation without printing arguments',()=>{
+ const secret='sentinel-secret-that-must-not-appear';
+ const p=spawnSync(process.execPath,['dist/server/cli.js','status','--token',secret],{encoding:'utf8'});
+ assert.equal(p.status,1); assert.ok(!p.stdout.includes(secret)); assert.ok(!p.stderr.includes(secret));
+});
+test('real CLI serves, pauses and resumes using protected disposable configuration',async t=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'putio-cli-')); t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
+ const listener=net.createServer(); await new Promise(r=>listener.listen(0,'127.0.0.1',r)); const port=listener.address().port; await new Promise(r=>listener.close(r));
+ const clientFile=path.join(dir,'client'),keyFile=path.join(dir,'key'),config=path.join(dir,'config.json');
+ fs.writeFileSync(clientFile,randomBytes(32).toString('base64url'),{mode:0o600}); fs.writeFileSync(keyFile,randomBytes(32).toString('base64url'),{mode:0o600});
+ fs.writeFileSync(config,JSON.stringify({host:'127.0.0.1',port,stateDirectory:path.join(dir,'state'),roots:[{id:'downloads',label:'Downloads',path:dir}],clientTokenFile:clientFile,credentialKeyFile:keyFile}));
+ const server=spawn(process.execPath,['dist/server/cli.js','serve','--config',config],{stdio:['ignore','pipe','pipe']}); t.after(()=>server.kill());
+ await new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(new Error('server startup timeout')),5000);server.stdout.on('data',d=>{if(String(d).includes('Server ready')){clearTimeout(timer);resolve()}});server.once('exit',()=>{clearTimeout(timer);reject(new Error('server exited'))})});
+ for(const [command,expected] of [['pause',true],['status',true],['resume',false],['status',false]]) {
+  const proc=spawn(process.execPath,['dist/server/cli.js',command,'--config',config]); let out=''; proc.stdout.on('data',d=>out+=d); const exit=await new Promise(r=>proc.on('exit',r)); assert.equal(exit,0); if(command==='status') assert.equal(JSON.parse(out).value.paused,expected);
+ }
+ server.kill(); await new Promise(r=>server.once('exit',r));
+});

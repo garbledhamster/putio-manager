@@ -1,0 +1,23 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "Node16",
+    "moduleResolution": "Node16",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "outDir": "dist",
+    "rootDir": "src",
+    "types": [
+      "node"
+    ]
+  },
+  "include": [
+    "src/core/**/*.ts",
+    "src/engine/**/*.ts",
+    "src/remote/**/*.ts",
+    "src/server/**/*.ts",
+    "src/desktop/**/*.ts",
+    "src/shared.ts"
+  ]
+}
