@@ -20,6 +20,9 @@ export function createSetup(configFile: string, root: string, port: number) {
       }).match(/,"(S-\d+(?:-\d+)+)"\s*$/m)?.[1];
     } catch { /* Fail before writing credentials when the identity is unavailable. */ }
     if (!sid) throw new Error("Cannot determine the Windows account for private setup.");
+    // Elevated tokens can add explicit SYSTEM/Administrators grants at creation.
+    // Reset those grants before removing inheritance; no credentials exist yet.
+    execFileSync("icacls.exe", [dir, "/reset"], { stdio: "ignore", windowsHide: true });
     execFileSync("icacls.exe", [dir, "/inheritance:r", "/grant:r", `*${sid}:(OI)(CI)F`], { stdio: "ignore", windowsHide: true });
   } else chmodSync(dir, 0o700);
   const clientTokenFile = path.join(dir, "client-token"), credentialKeyFile = path.join(dir, "credential-key");

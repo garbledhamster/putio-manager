@@ -20,10 +20,16 @@
           <span id="account-status" role="status" aria-live="polite"></span>
         </div>
       </div>
-      <nav id="navigation" aria-label="Views"></nav>
+      <div class="navigation-row">
+        <nav id="navigation" aria-label="Views"></nav>
+        <div class="search-control" role="search">
+          <input type="search" id="global-search" aria-label="Search all views" placeholder="Search all views" maxlength="200" />
+        </div>
+      </div>
       <div id="actions" class="actions" aria-label="Current view actions"></div>
     </header>
     <main>
+      <div id="engine-error" role="alert" hidden></div>
       <div id="notice" role="status" aria-live="polite"></div>
       <section id="view"></section>
     </main>
@@ -37,6 +43,16 @@
           ><button type="submit" id="dialog-submit">OK</button>
         </footer>
       </form>
+    </dialog>
+    <dialog id="magnet-destination" aria-labelledby="magnet-title">
+      <h2 id="magnet-title">Choose a put.io folder</h2>
+      <p id="magnet-path" aria-live="polite"></p>
+      <div id="magnet-folders" class="magnet-folders"></div>
+      <p id="magnet-status" role="status"></p>
+      <footer>
+        <button type="button" id="magnet-cancel" autofocus>Cancel</button>
+        <button type="button" id="magnet-save" class="button">Add transfer here</button>
+      </footer>
     </dialog>
     <script type="module" src="renderer.js"></script>
   </body>

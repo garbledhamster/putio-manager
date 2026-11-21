@@ -18,6 +18,8 @@ function send(res: ServerResponse, status: number, body: unknown) {
 function fail(res: ServerResponse, status: number, code: string, message: string) { send(res, status, { ok: false, error: { code, message } }); }
 function engineFailure(error: unknown): [number, string, string] {
   const message = error instanceof Error ? error.message : "";
+  if (message === "put.io could not move the item to this folder.") return [409, "move_rejected", message];
+  if (message === "Choose a valid destination for this item.") return [400, "invalid_command", message];
   if (["Engine is paused.", "A connection is already in progress.", "Request ID conflicts with an earlier command.", "Job cannot be retried.", "Request receipt limit reached."].includes(message)) return [409, "conflict", message];
   if (["Enter a put.io token in Settings.", "Could not validate the account.", "Could not connect the account."].includes(message)) return [403, "account_auth", "The server account needs authorization or validation."];
   if (["Could not connect to put.io.", "put.io returned an invalid response.", "put.io rejected the request.", "Scan failed. Check connection and rules."].includes(message)) return [502, "provider_unavailable", "The server could not complete the put.io request. Check account and connectivity."];

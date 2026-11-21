@@ -2,16 +2,17 @@ import { mkdtempSync, mkdirSync, promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { randomUUID, randomBytes, createCipheriv, createDecipheriv } from "node:crypto";
-import { app, BrowserWindow, dialog, ipcMain, safeStorage, shell, Tray, nativeImage, Menu } from "electron";
-import { DesktopAdapter, integrationStatus, setStartup, setMagnet, submitMagnet, MagnetQueue } from "./platform";
+import { app, BrowserWindow, dialog, ipcMain, safeStorage, shell, Tray, nativeImage, Menu, clipboard } from "electron";
+import { showCopyableDialog } from "./copy-dialog";
+import { DesktopAdapter, smokeDesktopAdapter, integrationStatus, setStartup, setMagnet, submitMagnet, MagnetQueue } from "./platform";
 import { startFixture } from "./smoke-fixture";
 import { runUiScenario } from "./ui-scenario";
-import { createEngine, ApplicationEngine } from "../engine/engine";
+import { createEngine, ApplicationEngine, EngineStartupFailure, QuiescentEngineOwner } from "../engine/engine";
 import { EngineClient, EngineCommand, EngineSnapshot } from "../engine/contracts";
 import { startRemoteServer } from "../server/server";
 import { RemoteEngine } from "../remote/client";
 import { defaultSettings } from "../core/settings";
-import { Settings, Snapshot, validateAccountLink } from "../shared";
+import { RemoteFile, Settings, Snapshot, validateAccountLink } from "../shared";
 
 // GUI launches may inherit a logging pipe that closes before Electron writes a warning.
 for (const stream of [process.stdout, process.stderr]) {
@@ -24,21 +25,68 @@ const smoke = process.argv.includes("--smoke-test");
 const smokeDir = smoke ? mkdtempSync(path.join(os.tmpdir(), "putio-smoke-")) : "";
 if (smoke) app.setPath("userData", smokeDir);
 let window: BrowserWindow;
-const integration: DesktopAdapter = {
-  startupSupported: process.platform === "win32" || process.platform === "darwin",
-  magnetSupported: app.isPackaged && ["win32", "darwin", "linux"].includes(process.platform),
+const startupSupported = process.platform === "win32" || process.platform === "darwin";
+const magnetSupported = app.isPackaged && ["win32", "darwin", "linux"].includes(process.platform);
+const integration: DesktopAdapter = smoke ? smokeDesktopAdapter(startupSupported, magnetSupported) : {
+  startupSupported,
+  magnetSupported,
   getStartup: () => app.getLoginItemSettings().openAtLogin,
   setStartup: enabled => app.setLoginItemSettings({ openAtLogin: enabled }),
   getMagnet: () => app.isDefaultProtocolClient("magnet"),
   setMagnet: enabled => enabled ? app.setAsDefaultProtocolClient("magnet") : app.removeAsDefaultProtocolClient("magnet"),
 };
+async function showMagnetMessage(message: string, type: "info" | "error") {
+  if (smoke) return;
+  await showCopyableDialog(message, async detail => (await dialog.showMessageBox(window, { type, message, detail, buttons: ["OK", "Copy"], defaultId: 0, cancelId: 0, noLink: true })).response, text => clipboard.writeText(text));
+}
+let magnetPrompt: {
+  id: string;
+  target: ReturnType<typeof captureTarget>;
+  folders: Set<string>;
+  finish: (folder: string | null) => void;
+} | undefined;
+
+async function chooseMagnetFolder(target: ReturnType<typeof captureTarget>) {
+  if (window.isDestroyed()) return null;
+  if (!smoke) {
+    if (window.isMinimized()) window.restore();
+    window.show();
+    window.focus();
+  }
+  const id = randomUUID();
+  const contents = window.webContents;
+  let cancel!: () => void;
+  try {
+    return await new Promise<string | null>(resolve => {
+      cancel = () => resolve(null);
+      magnetPrompt = { id, target, folders: new Set(["0"]), finish: resolve };
+      contents.once("render-process-gone", cancel);
+      window.once("closed", cancel);
+      contents.send("magnet-destination", id);
+    });
+  } finally {
+    contents.removeListener("render-process-gone", cancel);
+    window.removeListener("closed", cancel);
+    magnetPrompt = undefined;
+  }
+}
+
 async function handleMagnet(value: string) {
   try {
-    await submitMagnet(value, uri => selected().execute("addTransfer", [uri, "0"]));
-    await dialog.showMessageBox(window, { type: "info", message: "Transfer added to put.io." });
+    let submitted = false;
+    await submitMagnet(value, async uri => {
+      const target = captureTarget();
+      const folder = await chooseMagnetFolder(target);
+      if (folder === null) return;
+      assertTarget(target);
+      await target.engine.execute("addTransfer", [uri, folder]);
+      submitted = true;
+    });
+    if (!submitted) return false;
+    await showMagnetMessage("Transfer added to put.io.", "info");
     return true;
   } catch {
-    await dialog.showMessageBox(window, { type: "error", message: "Could not add the magnet transfer. Check the link and selected engine connection." });
+    await showMagnetMessage("Could not add the magnet transfer. Check the link and selected engine connection.", "error");
     return false;
   }
 }
@@ -57,6 +105,7 @@ let quitting = false;
 let fixtureBase: string | undefined;
 let client: EngineClient | undefined;
 let local: ApplicationEngine | undefined;
+let retainedOwner: QuiescentEngineOwner | undefined;
 let unsubscribe: (() => void) | undefined;
 let mode: "local" | "remote" = "local";
 let config: { url: string; label: string; encryptedToken: string; mode: "local" | "remote" } = { url: "", label: "Remote", encryptedToken: "", mode: "local" };
@@ -122,6 +171,10 @@ function bind(channel: string, handler: (...args: any[]) => unknown) {
   });
 }
 async function switchEngine(next: "local" | "remote") {
+  if (retainedOwner) {
+    try { await retainedOwner.close(); retainedOwner = undefined; }
+    catch { publish(unavailable("A previous engine still owns files that could not be safely closed. Close the app to finish recovery.")); return latest!; }
+  }
   const nextConfig = { ...config, mode: next };
   await saveConfig(nextConfig);
   targetGeneration++; config = nextConfig; mode = next;
@@ -130,7 +183,7 @@ async function switchEngine(next: "local" | "remote") {
   publish(unavailable(next === "remote" ? "Connecting to remote server…" : "Starting Local…"));
   if (old) {
     try { await old.close(); }
-    catch { publish(unavailable("Could not close the previous engine.")); return latest!; }
+    catch { retainedOwner = { close: () => old.close() }; publish(unavailable("Could not close the previous engine; it still owns its state.")); return latest!; }
   }
   try {
     if (next === "local") {
@@ -151,7 +204,10 @@ async function switchEngine(next: "local" | "remote") {
     unsubscribe = selected.subscribe(s => { if (client === selected) publish(decorated(s)); }, e => { if (client === selected) publish(unavailable(e.message)); });
     try { const s = await selected.getSnapshot(); if (client === selected) publish(decorated(s)); }
     catch (e) { if (client === selected) publish(unavailable(e instanceof Error ? e.message : "Connection failed.")); }
-  } catch (e) { publish(unavailable(e instanceof Error ? e.message : "Connection failed.")); }
+  } catch (e) {
+    if (e instanceof EngineStartupFailure) retainedOwner = e.owner;
+    publish(unavailable(e instanceof Error ? e.message : "Connection failed."));
+  }
   return latest!;
 }
 function selected(): EngineClient { if (!client) throw new Error("The selected engine is unavailable. Check Settings."); return client; }
@@ -181,6 +237,22 @@ async function configureRemote(input: {url: string; label: string; token?: strin
 }
 function bindHandlers() {
   bind("getState", state);
+  bind("listMagnetFolders", async (id: unknown, parent: string) => {
+    const prompt = magnetPrompt;
+    if (!prompt || prompt.id !== id || !prompt.folders.has(parent)) throw new Error("This folder picker has closed.");
+    assertTarget(prompt.target);
+    const files = await prompt.target.engine.execute("listFiles", [parent]) as RemoteFile[];
+    assertTarget(prompt.target);
+    const folders = files.filter(file => file.isFolder).map(({ id, name }) => ({ id, name }));
+    for (const folder of folders) prompt.folders.add(folder.id);
+    return folders;
+  });
+  bind("finishMagnetDestination", (id: unknown, folder: string | null) => {
+    const prompt = magnetPrompt;
+    if (!prompt || prompt.id !== id) return;
+    if (folder !== null && !prompt.folders.has(folder)) throw new Error("Choose a put.io folder.");
+    prompt.finish(folder);
+  });
   bind("getDesktopIntegration", () => integrationStatus(integration));
   bind("setMagnetRegistration", (enabled: unknown) => { if (typeof enabled !== "boolean") throw new Error("Invalid magnet registration choice."); return setMagnet(integration, enabled); });
   bind("getRemoteConnection", () => ({ url: config.url, label: config.label, hasCredential: !!config.encryptedToken }));
@@ -207,7 +279,7 @@ function bindHandlers() {
     }
     await engine.execute("cancelAccountLink"); throw new Error("Account connection expired.");
   });
-  for (const name of ["listFiles", "renameFile", "createFolder", "deleteFile", "downloadFile", "downloadZip", "cancelDownloads", "listTransfers", "addTransfer", "cancelTransfer", "addRule", "updateRule", "prepareRuleDirectory", "removeRule", "checkRules", "pause", "resume", "retryDownload"] as EngineCommand[]) bind(name, (...args) => command(name, args.filter((arg, index) => arg !== undefined || index < args.length - 1)));
+  for (const name of ["listFiles", "moveFile", "renameFile", "createFolder", "deleteFile", "downloadFile", "downloadZip", "cancelDownloads", "listTransfers", "addTransfer", "cancelTransfer", "addRule", "updateRule", "prepareRuleDirectory", "removeRule", "checkRules", "pause", "resume", "retryDownload"] as EngineCommand[]) bind(name, (...args) => command(name, args.filter((arg, index) => arg !== undefined || index < args.length - 1)));
   bind("saveSettings", async (patch: Partial<Settings> & {token?: string}) => {
     if (mode === "remote" && patch?.token) throw new Error("Use Connect with put.io to authorize the remote server.");
     const context = captureTarget();
@@ -249,6 +321,7 @@ function bindHandlers() {
 }
 app.whenReady().then(async () => {
   if (process.argv.includes("--verify-startup")) {
+    if (smoke) throw new Error("Native startup verification is unavailable during smoke tests.");
     if (!app.isPackaged || !integration.startupSupported) throw new Error("Native startup verification requires a supported packaged application.");
     const previous = integration.getStartup();
     try { setStartup(integration, true); setStartup(integration, false); }
@@ -272,15 +345,35 @@ app.whenReady().then(async () => {
   bindHandlers();
   const icon = nativeImage.createFromPath(path.join(__dirname, "../ui/branding/putio-manager.png"));
   if (icon.isEmpty()) throw new Error("Application icon is unavailable.");
-  window = new BrowserWindow({ width: 892, height: 510, icon, webPreferences: { preload: path.join(__dirname, "preload.js"), contextIsolation: true, sandbox: true, nodeIntegration: false } });
+  window = new BrowserWindow({ width: 892, height: 510, minWidth: 340, minHeight: 360, icon, ...(smoke ? { show: false } : {}), webPreferences: { preload: path.join(__dirname, "preload.js"), contextIsolation: true, sandbox: true, nodeIntegration: false, ...(smoke ? { backgroundThrottling: false } : {}) } });
+  if (smoke) window.on("show", () => { throw new Error("Smoke window became visible."); });
   window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   window.webContents.on("will-navigate", event => event.preventDefault());
   window.on("minimize", () => { if (tray) window.hide(); });
-  window.on("close", () => { quitting = true; });
+  window.on("close", event => {
+    if (!quitting && tray) {
+      event.preventDefault();
+      window.hide();
+    }
+  });
+  if (!smoke) {
+    tray = new Tray(icon.resize({ width: 16, height: 16 }));
+    const showWindow = () => {
+      if (quitting || window.isDestroyed()) return;
+      if (window.isMinimized()) window.restore();
+      window.show();
+      window.focus();
+    };
+    tray.setContextMenu(Menu.buildFromTemplate([
+      { label: "Show", click: showWindow },
+      { label: "Quit", click: () => app.quit() },
+    ]));
+    tray.setToolTip("Putio Manager");
+    tray.on("double-click", showWindow);
+  }
   await switchEngine(config.mode);
   await window.loadFile(path.join(__dirname, "../ui/index.html"));
   magnets.start();
-  if (!icon.isEmpty()) { tray = new Tray(icon.resize({ width: 16, height: 16 })); tray.setContextMenu(Menu.buildFromTemplate([{ label: "Show", click: () => window.show() }, { label: "Quit", click: () => app.quit() }])); tray.setToolTip("Putio Manager"); tray.on("double-click", () => window.show()); }
   if (smoke) {
     const remoteDir = path.join(smokeDir, "remote-state"), rootDir = path.join(smokeDir, "remote-downloads");
     mkdirSync(rootDir, { recursive: true });
@@ -295,10 +388,10 @@ app.whenReady().then(async () => {
     const server = await startRemoteServer(delayedFixture, { host: "127.0.0.1", port: 0, clientToken: fixtureToken });
     const address = server.address;
     if (!address || typeof address === "string") throw new Error("Fixture server address unavailable.");
-    await runUiScenario(window, { url: `http://127.0.0.1:${address.port}`, token: fixtureToken });
+    await runUiScenario(window, { url: `http://127.0.0.1:${address.port}`, token: fixtureToken }, () => magnets.receive(["magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567"]));
     await server.close(); await remoteFixture.close(); const arg = process.argv.find(v => v.startsWith("--screenshot=")); if (arg) await fs.writeFile(arg.slice(13), (await window.webContents.capturePage()).toPNG()); console.log("SMOKE PASS"); fixture?.server.close(); app.quit(); }
 }).catch(error => { console.error("Startup or smoke test failed:", error.message); app.exit(1); });
-app.on("activate", () => { if (window && !window.isDestroyed()) window.show(); });
+app.on("activate", () => { if (!smoke && window && !window.isDestroyed()) window.show(); });
 let closing = false;
-app.on("before-quit", event => { quitting = true; if (!closing && client) { event.preventDefault(); closing = true; unsubscribe?.(); void client.close().finally(() => app.quit()); } });
+app.on("before-quit", event => { quitting = true; const owner = retainedOwner ?? client; if (!closing && owner) { event.preventDefault(); closing = true; unsubscribe?.(); void owner.close().then(() => app.quit(), () => app.quit()); } });
 app.on("window-all-closed", () => { if (quitting || process.platform !== "darwin") app.quit(); });

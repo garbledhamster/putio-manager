@@ -21,6 +21,47 @@ test('rejects public bind and weak credential', async()=>{
  await assert.rejects(startRemoteServer(engine(),{host:'0.0.0.0',port:0,clientToken:token}));
  await assert.rejects(startRemoteServer(engine(),{host:'127.0.0.1',port:0,clientToken:'short'}));
 });
+test('a fresh client loads saved settings after the remote engine restarts', async t => {
+ const fs = require('node:fs/promises');
+ const os = require('node:os');
+ const path = require('node:path');
+ const { createEngine } = require('../dist/engine/engine');
+ const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'remote-settings-'));
+ const root = path.join(dir, 'downloads');
+ await fs.mkdir(root);
+ const options = {
+   stateDirectory: path.join(dir, 'state'),
+   credentials: { available: () => false },
+   roots: [{ id: 'root', label: 'Downloads', path: root }],
+ };
+ let engine, server, client;
+ t.after(async () => {
+   await client?.close();
+   await server?.close();
+   await engine?.close();
+   await fs.rm(dir, { recursive: true, force: true });
+ });
+ const connect = async () => {
+   engine = await createEngine(options);
+   server = await startRemoteServer(engine, { host: '127.0.0.1', port: 0, clientToken: token });
+   client = new RemoteEngine({ url: `http://127.0.0.1:${server.address.port}`, token });
+ };
+ await connect();
+ const expected = { parallelDownloads: 4, autoDownloadInterval: 240, speedLimitBytesPerSecond: 2048, deleteAfterDownload: true, showToolTips: false };
+ await client.execute('selectDownloadRoot', ['root']);
+ await client.execute('saveSettings', [expected]);
+ const before = await client.getSnapshot();
+ await client.close();
+ await server.close();
+ await engine.close();
+ await connect();
+ const after = await client.getSnapshot();
+ assert.equal(after.engine.id, before.engine.id);
+ assert.notEqual(after.engine.epoch, before.engine.epoch);
+ assert.equal(after.settings.downloadDirectory, before.settings.downloadDirectory);
+ assert.ok(after.settings.downloadDirectory);
+ for (const [key, value] of Object.entries(expected)) assert.equal(after.settings[key], value, key);
+});
 test('protocol mismatch is rejected before commands', async t=>{
  const http=require('node:http'); let submitted=0;
  const server=http.createServer((req,res)=>{ if(req.method==='POST') submitted++; res.writeHead(200,{'content-type':'application/json'}); res.end(JSON.stringify({ok:true,value:{...snapshot(),engine:{...snapshot().engine,protocolVersion:1}}})); });
@@ -65,3 +106,12 @@ test('legacy v1 server cannot receive a v2 download command', async t=>{
  const client=new RemoteEngine({url:`http://127.0.0.1:${legacy.address().port}`,token}); t.after(()=>client.close());
  await assert.rejects(client.execute('downloadFile',['1',{deleteAfterDownload:false}]),/incompatible/); assert.equal(posts,0);
 });
+for (const [field,value] of [['retryAt',123],['attemptCount',-1],['attemptCount',1.5]]) test(`remote client rejects malformed ${field} recovery state`,async t=>{
+ const http=require('node:http');const job={id:'job',fileId:'1',name:'file',destination:'local',status:'waiting',bytesReceived:0,totalBytes:4,speed:0,addedAt:'2026-01-01T00:00:00Z',[field]:value};const server=http.createServer((req,res)=>{res.writeHead(200,{'content-type':'application/json'});res.end(JSON.stringify({ok:true,value:{...snapshot(),jobs:[job]}}));});await new Promise(r=>server.listen(0,'127.0.0.1',r));t.after(()=>new Promise(r=>server.close(r)));const client=new RemoteEngine({url:`http://127.0.0.1:${server.address().port}`,token});t.after(()=>client.close());let rejected=false;try{await client.getSnapshot()}catch{rejected=true;}assert.equal(rejected,true);
+});
+test('remote client rejects malformed cleanupPending snapshot',async t=>{
+ const http=require('node:http');const job={id:'job',fileId:'1',name:'file',destination:'local',status:'completed',bytesReceived:4,totalBytes:4,speed:0,addedAt:'2026-01-01T00:00:00Z',cleanupPending:'yes'};const server=http.createServer((req,res)=>{res.writeHead(200,{'content-type':'application/json'});res.end(JSON.stringify({ok:true,value:{...snapshot(),jobs:[job]}}));});await new Promise(r=>server.listen(0,'127.0.0.1',r));t.after(()=>new Promise(r=>server.close(r)));const client=new RemoteEngine({url:`http://127.0.0.1:${server.address().port}`,token});t.after(()=>client.close());await assert.rejects(client.getSnapshot());
+});
+
+for(const [field,value] of [['stageDownloads','yes'],['stagingDirectory',7],['stagingMaxBytes',0],['stagingMinimumFreeBytes',-1]]) test(`remote snapshot rejects invalid ${field}`,()=>{const {isSnapshot}=require('../dist/remote/protocol');const valueSnapshot=snapshot();valueSnapshot.settings[field]=value;assert.equal(isSnapshot(valueSnapshot),false);});
+test('remote snapshot accepts an older server without staging settings',()=>{const {isSnapshot}=require('../dist/remote/protocol');const old=snapshot();delete old.settings.stageDownloads;delete old.settings.stagingDirectory;delete old.settings.stagingMaxBytes;delete old.settings.stagingMinimumFreeBytes;assert.equal(isSnapshot(old),true);});

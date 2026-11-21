@@ -1,6 +1,21 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const { PutioApi } = require("../dist/core/api");
+test("moving to root posts the destination and checks per-file errors", async () => {
+  let requests = 0;
+  const api = new PutioApi(() => "fixture", "https://fixture.invalid/v2/", async (url, options) => {
+    assert.equal(url.pathname, "/v2/files/move");
+    assert.equal(options.method, "POST");
+    assert.equal(options.body.toString(), "file_ids=2&parent_id=0");
+    requests++;
+    return Response.json({ status: "OK", errors: requests === 1 ? [] : [{ error_type: "INVALID_MOVE" }] });
+  });
+  await api.moveFile("2", "0");
+  await assert.rejects(api.moveFile("2", "0"), /could not move/);
+  await assert.rejects(api.moveFile("0", "2"), /valid destination/);
+  await assert.rejects(api.moveFile("2", "2"), /valid destination/);
+  assert.equal(requests, 2);
+});
 test("API encodes mutations, replaces tokens, follows cursor, and rejects incomplete ZIP", async () => {
   const requests = [];
   let calls = 0;

@@ -3,6 +3,10 @@ import path from "node:path";
 import { AutoDownloadRule, Settings } from "../shared";
 export const defaultSettings: Settings = {
   downloadDirectory: "",
+  stageDownloads: false,
+  stagingDirectory: "",
+  stagingMaxBytes: 20 * 1024 ** 3,
+  stagingMinimumFreeBytes: 10 * 1024 ** 3,
   parallelDownloads: 1,
   speedLimitBytesPerSecond: 0,
   deleteAfterDownload: false,
@@ -38,6 +42,11 @@ export class SettingsStore {
       );
       const settings = { ...defaultSettings, ...data.settings };
       if (
+        typeof settings.stageDownloads !== "boolean" ||
+        typeof settings.stagingDirectory !== "string" ||
+        (settings.stagingDirectory && !path.isAbsolute(settings.stagingDirectory)) ||
+        !Number.isSafeInteger(settings.stagingMaxBytes) || settings.stagingMaxBytes <= 0 ||
+        !Number.isSafeInteger(settings.stagingMinimumFreeBytes) || settings.stagingMinimumFreeBytes < 0 ||
         typeof settings.downloadDirectory !== "string" ||
         (settings.downloadDirectory &&
           !path.isAbsolute(settings.downloadDirectory)) ||

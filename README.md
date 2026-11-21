@@ -2,9 +2,9 @@
 
 Browse your put.io account, copy files to your computer or a Linux download server, and automate repeated downloads from selected folders.
 
-The desktop app runs on Windows, macOS and Linux. A separate headless engine can keep downloading on a server after the desktop app closes. Optional source cleanup runs after a download has been saved successfully.
+The desktop app runs on Windows, macOS and Linux. A separate headless engine can keep downloading on a server after you quit the desktop app. You can download to the destination directly or use an optional staging area on the engine host before copying to the destination. Source cleanup requires verified delivery and the job's saved cleanup choices.
 
-**Start here:** [Download](#download) · [Screenshot guide](#screenshot-guide) · [Desktop setup](#desktop-setup) · [Linux remote server](#linux-remote-server) · [Everyday use](#everyday-use) · [Jellyfin](#connect-a-jellyfin-library) · [Troubleshooting](#troubleshooting)
+**Start here:** [Download](#download) · [Screenshot guide](#screenshot-guide) · [Desktop setup](#desktop-setup) · [Linux remote server](#linux-remote-server) · [Everyday use](#everyday-use) · [Staging](#optional-staging-before-delivery) · [Jellyfin](#connect-a-jellyfin-library) · [Troubleshooting](#troubleshooting)
 
 ## Download
 
@@ -49,7 +49,7 @@ Compare the entire hash for the exact filename. A mismatch means you should obta
 
 ## Screenshot guide
 
-Every image below comes from the real app running against a newly generated, isolated demonstration service. Folder names, files, transfers, credentials and destinations are synthetic. `C:\Windows\Temp\putio-public-demo` is a disposable demonstration location; choose your own download destination. No live account, household server or media library appears in these images. Click an image to enlarge it; use the numbered links to follow the full instructions.
+Every image below comes from the real app running against a newly generated, isolated demonstration service. Folder names, files, transfers, credentials and destinations are synthetic. Visible temporary paths belong to the disposable demonstration; choose your own download and staging directories. No live account, household server or media library appears in these images. Screenshot 8 uses a disposable Windows demonstration server; on Linux, the same control shows your server's Linux download path, such as `/srv/putio-downloads`. Click an image to enlarge it; use the numbered links to follow the full instructions.
 
 <table>
   <tr>
@@ -57,8 +57,8 @@ Every image below comes from the real app running against a newly generated, iso
     <td width="50%"><a href="docs/images/02-connect-account.png"><img src="docs/images/02-connect-account.png" alt="2. General settings with a connected synthetic local account" width="520"></a><br><b>2. Connect put.io.</b> <a href="#link-your-account-and-choose-a-destination">Account and destination</a></td>
   </tr>
   <tr>
-    <td><a href="docs/images/03-download-settings.png"><img src="docs/images/03-download-settings.png" alt="3. Download settings with keep-source selected and source-folder cleanup disabled" width="520"></a><br><b>3. Keep sources for your first copy.</b> <a href="#make-your-first-download">First download</a></td>
-    <td><a href="docs/images/04-browse-files.png"><img src="docs/images/04-browse-files.png" alt="4. Files view containing only the generated Demo downloads folder and example-data.bin" width="520"></a><br><b>4. Browse and select a file.</b> <a href="#browse-and-manage-putio-files">Files</a></td>
+    <td><a href="docs/images/03-download-settings.png"><img src="docs/images/03-download-settings.png" alt="3. Download settings showing optional staging controls, keep-source selected and source-folder cleanup disabled" width="520"></a><br><b>3. Keep sources for your first copy.</b> <a href="#make-your-first-download">First download</a></td>
+    <td><a href="docs/images/04-browse-files.png"><img src="docs/images/04-browse-files.png" alt="4. Files view with generated demonstration folders and example-data.bin" width="520"></a><br><b>4. Browse and select a file.</b> <a href="#browse-and-manage-putio-files">Files</a></td>
   </tr>
   <tr>
     <td><a href="docs/images/05-automatic-rule.png"><img src="docs/images/05-automatic-rule.png" alt="5. Automatic-download rule dialog with generated folder, filters, schedule and explicit cleanup choices" width="520"></a><br><b>5. Automate a selected folder.</b> <a href="#automatic-download-rules">Rules and schedules</a></td>
@@ -66,7 +66,7 @@ Every image below comes from the real app running against a newly generated, iso
   </tr>
   <tr>
     <td><a href="docs/images/07-remote-connection.png"><img src="docs/images/07-remote-connection.png" alt="7. Remote engine connected to a synthetic loopback server with credential kept out of view" width="520"></a><br><b>7. Connect to your Linux engine.</b> <a href="#connect-the-desktop-through-ssh">SSH and Remote setup</a></td>
-    <td><a href="docs/images/08-remote-download-root.png"><img src="docs/images/08-remote-download-root.png" alt="8. Downloads settings showing a synthetic remote root and Use root control" width="520"></a><br><b>8. Select the server destination.</b> <a href="#connect-the-desktop-through-ssh">Remote download root</a></td>
+    <td><a href="docs/images/08-remote-download-root.png"><img src="docs/images/08-remote-download-root.png" alt="8. Downloads settings showing a synthetic remote root, Use root and engine staging controls" width="520"></a><br><b>8. Select the server destination.</b> <a href="#connect-the-desktop-through-ssh">Remote download root</a></td>
   </tr>
 </table>
 
@@ -78,9 +78,12 @@ Every image below comes from the real app running against a newly generated, iso
 | **Download, Local engine** | This computer copies a file from put.io to the local destination you choose. |
 | **Download, Remote engine** | Your server copies a file from put.io to an allowed server destination. The file stays on that server. |
 | **Automatic-download rule** | The selected engine periodically checks a put.io folder and queues matching files. |
-| **Optional cleanup** | The selected engine deletes the put.io source after successful download finalization, subject to the job's saved options. |
+| **Optional staging** | The selected engine downloads into its own staging area, copies to the destination and verifies that copy before publishing it. Remote staging uses the server's storage. |
+| **Optional cleanup** | The selected engine deletes an eligible put.io source after verified destination publication, subject to the job's saved options. |
 
 The **Engine** and **put.io** indicators show separate connections. A reachable Remote engine can still need account authorization. Selecting Remote does not copy existing local jobs or account settings to the server. A connection failure does not silently switch downloads back to Local.
+
+Download destinations, staging, limits, rules and account authorization belong to the selected engine. Check the indicator before saving changes. The settings form preserves fields you are editing while fresh status arrives and saves the fields you changed. Switching engines loads that engine's settings. Desktop startup, magnet registration and saved table layouts belong to the desktop client.
 
 ## Desktop setup
 
@@ -122,7 +125,7 @@ The **Engine** and **put.io** indicators show separate connections. A reachable 
 2. Click **Connect with put.io**. Sign in to put.io in the browser and approve the connection. Return to the app and wait for the put.io indicator to show **Connected**.
 3. Account authorization belongs to the selected engine. Reconnect with the same control if authorization expires. The app uses operating-system secure storage when available; if the screen says the connection lasts only until the engine stops, reconnect after restarting or configure a supported secure-storage backend.
 4. Open **Settings → Downloads**. In Local mode click **Browse**, choose an existing destination, and click **Save settings**. In Remote mode select an allowed **Download root** and click **Use root**.
-5. For the first download, select **Don't delete files from Put.io**. Leave **Delete source folders when only excluded files remain** unchecked. Save settings.
+5. For the first download, select **Don't delete files from Put.io**. Leave **Delete source folders when only excluded files remain** and **Download locally before copying to destination** unchecked. Save settings. You can configure [staging](#optional-staging-before-delivery) after the first direct download works.
 6. **Settings → Setup** links back to the account and destination controls whenever you need to revisit them.
 
 The optional manual-token disclosure is an advanced alternative to browser linking. Enter only a token you obtained for your own account. Never paste a token into an issue, screenshot, command argument or shared log.
@@ -132,7 +135,7 @@ The optional manual-token disclosure is an advanced alternative to browser linki
 1. Use a small file you own or have permission to download. Keep source deletion off while proving your setup.
 2. Open **Files**, click **Refresh**, expand a folder and select the file. Click **Download**.
 3. Review the download dialog's source-deletion, folder-cleanup and speed options. Choose **Don't delete files from Put.io** and **Keep source folders** if overriding defaults. Read the **Effective** summary, then submit.
-4. Open **Downloads**. Wait for the job to finish successfully. A zero-byte queue entry, an active progress bar or a transfer finishing at put.io does not establish a completed local copy.
+4. Open **Downloads**. Wait for **completed**, then read any warning beside it. **Downloaded - not verified** and **Needs attention** require inspection; neither proves a verified copy. A zero-byte queue entry, an active progress bar or a transfer finishing at put.io does not establish a completed local copy.
 5. Confirm the copy is accessible at the chosen destination on the selected engine host. If using Jellyfin, also complete the [library check](#connect-a-jellyfin-library).
 6. Refresh **Files** and confirm the put.io source is still present. Once the complete path works, decide whether [optional source cleanup](#optional-source-cleanup) fits your workflow.
 
@@ -267,7 +270,7 @@ Open the displayed **put.io** authorization link in your browser and approve the
 
 Keep both desktop and server on compatible **Remote protocol version 2** software. An older engine is rejected before commands are sent. If port `15173` is already used on the desktop, choose another unused local port and change the desktop server address to match. The server port remains `5173` unless you changed its configuration.
 
-For routine stopping, use **Downloads → Pause** first and let active copies finish. To stop the service completely:
+For routine stopping, use **Downloads → Pause** first. Wait for active transfers/copies to become paused and for any publication or cleanup already in progress to settle. Read any reported error. To stop the service completely:
 
 ```sh
 sudo systemctl stop putio-manager.service
@@ -275,11 +278,42 @@ sudo systemctl stop putio-manager.service
 
 To resume the service, use `sudo systemctl start putio-manager.service`, then resume queued work in the app if it is paused. The CLI also supports `pause` and `resume` in place of `status` with the same config argument. Pause survives an engine restart.
 
+### Optional staging on the Linux server
+
+The basic server configuration downloads straight to its allowed destination. To use staging, provision a separate private directory on the **server's local storage**, then enable the option through the Remote desktop connection. The words **Download locally** in Settings refer to the selected engine host, which is the server in Remote mode.
+
+For a new staging area in the example layout:
+
+```sh
+sudo install -d -o putio -g putio -m 0700 /var/lib/putio-manager/staging
+```
+
+Pause the engine, wait for it to settle, and stop the service before editing its existing private `config.json`. Preserve its current roots and credential-file paths. Add this top-level JSON property, with a comma where the surrounding JSON requires one:
+
+```json
+"stagingDirectory": "/var/lib/putio-manager/staging"
+```
+
+The example service already permits writes beneath `/var/lib/putio-manager`. If you use a different staging volume, mount it persistently and add its path to both `RequiresMountsFor` and `ReadWritePaths` in the service. Keep the staging directory outside the Jellyfin library and protect it with permissions for the service identity. Restart the service, reconnect the desktop, and follow [the staging controls](#optional-staging-before-delivery). The Remote staging path is read-only in the desktop app; its value comes from the server configuration.
+
+For an existing staging setup, retain its state and staged files before changing the path. A server staging-path change disables staging for new downloads and displays a notice; saved staged jobs may need attention. Review the path and existing jobs before enabling staging again. Do not move or delete retained partial files to force recovery.
+
 ## Everyday use
 
 ### Browse and manage put.io files
 
 **Files** shows your account's folder tree. Click **Refresh** to reload it, expand folders and select an item before choosing an action. **New folder**, **Rename** and **Delete** change your put.io account. Use the displayed confirmation and verify the selected item; manual Delete is separate from after-download cleanup.
+
+Use **Search all views** to filter the current view. In Files, a search also discovers matching items in nested folders. Clear the search to return to the normal tree.
+
+To move a file or folder **within put.io**:
+
+1. Right-click its row, or use the row's actions control, and choose **Manage → Move…**.
+2. In **Move to folder**, expand the destination tree, select a folder and choose **Move here**. **Put.io root** is a valid destination when the item is not already there.
+3. You can also drag an item onto an eligible visible folder. You cannot move the account root, move an item into its current folder or itself, or move a folder into its own descendants.
+4. Check the move notice and refreshed listing. If the notice says the item moved but the listing could not refresh, use **Refresh** before taking another action. If Remote move controls are unavailable, update the server to a version that supports file moves.
+
+A put.io move changes the cloud folder location. It does not relocate an existing download on your computer or server. Review any automatic rules that watch the affected folders.
 
 **Download** copies a selected file to the executing engine's download destination. **ZIP** downloads the selected file or folder as a ZIP archive. ZIP preparation can take time at put.io; a ZIP response reporting missing files is rejected. The manager saves the ZIP; it does not extract and organize it into a media library.
 
@@ -287,19 +321,32 @@ The **Open folder** action opens a Local destination on this computer. A Remote 
 
 ### Understand download status
 
-**Downloads** lists jobs and progress. Select a job for **Cancel** or, when offered, **Retry**.
+**Downloads** lists jobs and progress. Select a job for **Cancel** or, when offered, **Retry**. Right-click a file or download row, or open its row actions, for the corresponding actions menu. A **Copy** control beside a status or error copies the displayed message; inspect it for private filenames and paths before sharing it.
 
 | Control or result | Meaning and next action |
 | --- | --- |
-| **Pause** | Prevents new rule scans and job starts; active copies finish. Use Cancel separately to stop a selected copy. |
-| **Resume** | Allows queued jobs and rule scans to start again. |
-| **Cancel / Cancel all** | Stops selected or outstanding downloads. It does not remove your put.io source as a successful-download cleanup. |
-| **Retry** | Explicitly retries an eligible failed, canceled or interrupted job. Inspect its error and destination first. |
-| **Completed** | The local destination was finalized. Read any accompanying cleanup warning separately. |
-| **Interrupted** | A copy was active when the engine restarted. Check the error and explicitly Retry when ready. |
+| **Pause / paused / Copy paused** | Stops new scans and starts, suspends active download/copy work and preserves owned partials. An operation already publishing a destination or deleting a source can cross its safe completion boundary before Pause returns. Read any pause error. |
+| **Resume** | Allows scans and queued work again and resumes eligible paused jobs. The engine checks saved evidence before continuing a partial; it may recover or restart the transfer. |
+| **Cancel / Cancel all** | Requests cancellation of the selected or outstanding jobs and removes owned partials when safe. It does not request successful-download source cleanup. A publication or provider deletion already in progress may finish; inspect the result. |
+| **Waiting · Retry at…** | A temporary failure has a scheduled retry. Keep the engine running and resumed, or inspect the cause and use Retry when offered. |
+| **Recovering / Restarting** | The engine checks the source and saved partial, obtains a fresh URL, or starts over when safe continuation is unavailable. Progress may restart. |
+| **Copying / Verifying destination** | A staged job has reached the destination-copy and verification steps. Wait for the final result before treating it as delivered. |
+| **Retry** | Explicitly queues an eligible failed, canceled, interrupted, waiting or needs-attention job. Resolve its reported cause first; Retry does not bypass ownership or verification checks. |
+| **completed** | The engine published the destination with verified download evidence. Read cleanup and staging warnings separately, and verify the file in your consuming app. |
+| **Downloaded - not verified** | The engine saved bytes but lacks the evidence needed for verified completion, such as a known source length. It retains the put.io source. Inspect the result; do not treat this label as permission to delete the source. |
+| **Needs attention** | A storage, source-change, ownership, verification or recovery guard stopped automatic work on this job. Read the message, resolve the cause and use Retry only when offered. Preserve retained state and partials. |
+| **interrupted** | Saved work could not resume automatically. Inspect its error and destination, then use Retry when appropriate. |
 | **Downloaded locally; remote cleanup failed / outcome unknown** | Keep the good downloaded copy. Refresh put.io and inspect the specific source before deciding what cleanup to perform. Do not assume deletion succeeded or blindly repeat it. |
 
 Existing destination files are protected from silent overwrite. Changing defaults affects new jobs; already queued jobs retain their saved per-job options. Download URLs are refreshed when needed rather than stored as permanent credentials.
+
+Eligible temporary connection/server failures retry with a delay. Authentication failures, a changed source, unsafe paths, exhausted storage and uncertain file ownership can require your attention instead. If a message says **Source changed; retry to accept the refreshed source**, inspect that change before Retry; accepting it can discard the old partial and begin with the current source. Some unsafe or unresolved-close states keep Retry unavailable until the engine can recover safely.
+
+### Sort and arrange tables
+
+In **Downloads**, click a column heading to sort and click it again to reverse direction. Undated rows stay after dated rows when sorting a date column.
+
+In **Downloads**, **Transfers** and **Auto Downloads**, drag a heading to reorder columns and drag its edge to resize it. With keyboard focus on a heading, use Left/Right to move it; focus its resize handle and use Left/Right to adjust its width. **Reset columns** restores that table's default order and widths. The desktop client saves column order and widths for later use; each table has its own layout.
 
 ### Transfers into put.io
 
@@ -331,13 +378,33 @@ Rules and file/ZIP download dialogs can **Use global** or override the source-fi
 
 Default deletion and inherited job limits are captured when a job is queued. Later changes to those defaults do not rewrite existing jobs. The current engine-wide aggregate cap also applies to active traffic.
 
+### Optional staging before delivery
+
+Staging is **off by default**. It adds a step between downloading and publishing the final destination:
+
+```text
+put.io → private staging area on the engine host → destination copy → verification → published file
+```
+
+Use it when you want the network download to land on engine-local storage before the engine copies it to another destination. It needs room for retained staged bytes and the destination copy. It does not copy Remote downloads onto your desktop.
+
+1. Choose an existing, private **engine-local** staging directory outside your media library. Use a local filesystem with the file and hard-link operations the app requires; Windows UNC shares are rejected for staging. Keep other users and applications out of this working area. On Windows, protect the chosen directory with its filesystem ACL; downloaded staging bytes are not an encrypted archive.
+2. In **Settings → Downloads**, review **Engine staging directory**. In Local mode use its **Browse** control. In Remote mode an administrator must [configure the server path](#optional-staging-on-the-linux-server); the desktop cannot replace that path.
+3. Set **Staging budget (GiB)** and **Free-space reserve (GiB)**. Defaults are **20 GiB** for retained staging data and **10 GiB** of free-space reserve. The budget must be positive; the reserve can be zero. Leave enough real space on both staging and destination volumes. The engine checks reservations and can stop with a capacity message rather than overfill the available space.
+4. Check **Download locally before copying to destination** and click **Save settings**. “Locally” means the selected engine host. Confirm the selected Local/Remote indicator and path before queuing a job.
+5. Start a new small download with source deletion off. Follow **Downloads** through network transfer, **Copying**, **Verifying destination** and its final status. Check the destination file before enabling cleanup.
+
+New jobs save their staging choice, directory and limits. Turning staging on or off does not convert existing queued jobs. A tighter current budget or higher reserve also constrains saved staged jobs; relaxing a setting does not remove a stricter limit already saved for a job. Paused, failed or needs-attention jobs can retain staged bytes and consume the budget. Keep their state and partials while investigating. Do not delete the hidden engine namespace or its anchor files as a space-recovery shortcut.
+
+The engine verifies the destination copy against the staged bytes before publication and releases its retained staging artifacts after safe completion. A separate staging-cleanup warning can remain beside a good delivered copy. Unknown source evidence still produces **Downloaded - not verified** and keeps the put.io source, even when the destination matches the staged bytes.
+
 ### Optional source cleanup
 
 Enable cleanup only after a successful copy has reached the right destination and, when relevant, your library can read it.
 
 1. In **Settings → Downloads**, choose **Delete files from Put.io** to make successful source-file cleanup the default, or set deletion for an individual rule/download instead. Click **Save settings**.
 2. For a specific rule or manual file/ZIP download, choose **Use global**, **Delete**, or **Keep**. Read the effective summary. Keep overrides deletion for that job.
-3. A source is eligible for deletion only after the destination has been successfully finalized. A completed download with a cleanup error remains a completed local copy with a separate warning.
+3. A source is eligible for deletion only after verified destination publication and the required source checks. **Downloaded - not verified**, source changes and unresolved recovery guards retain the source. ZIP cleanup also requires verified source-content eligibility. A completed download with a cleanup error remains a completed local copy with a separate warning.
 4. Refresh **Files** to confirm the intended source disappeared. Verify the destination remains usable. If provider cleanup failed or is uncertain, inspect before taking a separate action.
 
 **Source-folder cleanup is a different, broader option.** **Delete source folders when only excluded files remain** is off by default. After successful source-file deletion, it can delete the source folder **and excluded leftovers inside it**, such as files rejected by a rule's extension/size filters. Watched folders are kept; explicit Keep choices, pending/failed work and uncertain state can defer cleanup. For manual downloads the source parent and remaining files may be affected. Turn it on only when you intend that broader scope; a rule or job can explicitly keep source folders.
@@ -348,7 +415,9 @@ For a ZIP, source cleanup applies to the **selected put.io source**, not merely 
 
 **Settings → Interface** controls tooltips, supported desktop login startup and optional magnet registration. Save changed settings. Desktop login startup is supported through native Windows/macOS controls; Linux desktop login startup is explicitly unsupported. Linux headless reboot startup comes from the systemd service, not this desktop checkbox. Tray behavior depends on the desktop environment.
 
-Local downloads and scans belong to the desktop process, so keep that engine running. Remote work belongs to the server service and continues after its desktop client closes. Use Pause/Cancel or stop the service when you intend to stop work.
+When the system tray is available, minimizing or closing the window hides it while the desktop process keeps running. Use the tray's **Show** action or double-click its icon to restore the window. Choose **Quit** in the tray when you intend to exit the desktop process. Closing the window is not the same as quitting.
+
+Local downloads and scans belong to that desktop process. Pause first if you want them held, then Quit. Remote work belongs to the server service and continues after you hide or quit the desktop client. Use Pause/Cancel on the selected engine or stop the server service when you intend to stop Remote work.
 
 ## Connect a Jellyfin library
 
@@ -379,14 +448,14 @@ For deployment-specific library details, consult [Jellyfin's library documentati
 
 ### Desktop update
 
-1. Pause the selected engine and let active copies finish. For Local mode, quit the app completely before replacing program files. A Remote server keeps its own lifecycle.
+1. Pause the selected engine and wait for active work to suspend or cross its safe publication/cleanup boundary. Inspect any error. For Local mode, use **Quit** from the tray before replacing program files; closing the window can leave it running. A Remote server keeps its own lifecycle.
 2. Download and verify the new archive. Extract it to a **new** version folder rather than merging files into the old bundle.
 3. Keep the old bundle until the new one opens correctly. Point shortcuts at the new launcher, start it, check the selected engine/account/destination, then Resume if appropriate.
 4. Update a Remote server to a matching protocol version before using a newer client that requires it. Account state and history are separate from portable program files; do not copy your private profile into a release archive or public issue.
 
 ### Linux server backup and upgrade
 
-1. Pause work, wait for active jobs to finish and stop `putio-manager.service`. Confirm it is stopped. Do not run two engines against the same state directory.
+1. Pause work, wait for the pause operation to settle and stop `putio-manager.service`. Confirm it is stopped. Do not run two engines against the same state directory.
 2. Back up the **whole private configuration directory and state together**, including `client-token` and `credential-key`, to protected storage. The encryption key is required to use encrypted saved authorization. Back up your downloaded files separately if you need them; the application state backup is not a media backup.
 3. For the example layout, this creates a private local archive without printing secrets:
 
@@ -395,14 +464,14 @@ For deployment-specific library details, consult [Jellyfin's library documentati
    sudo sh -c 'umask 077; tar -czf /var/backups/putio-manager/private-backup.tgz -C /var/lib putio-manager'
    ```
 
-   Choose a new backup filename if one already exists. Keep it private and verify you can read its archive listing locally. Never attach it to GitHub.
+   Choose a new backup filename if one already exists. Keep it private and verify you can read its archive listing locally. Never attach it to GitHub. If staging lives beneath `/var/lib/putio-manager` as in this guide, this archive also includes retained staged bytes and can be large. Preserve any external staging area with the matching recovery state; do not remove partials during an upgrade.
 4. Extract the verified new distribution into a new root-owned version directory. Update the service's `WorkingDirectory` and both executable paths in `ExecStart`. Keep the config/state paths unchanged; **do not rerun setup** over an existing configuration.
 5. Run `sudo systemctl daemon-reload`, start the service, and check its status locally. Reopen the tunnel and desktop; verify the selected Remote engine, account, destination and existing history before resuming.
 6. If rollback is necessary, stop the new service first. Preserve its state, restore the matching earlier program/service paths and a compatible protected state backup if needed, then verify before resuming. Never let old and new engines share the same state concurrently.
 
 ### After interruption or an error
 
-Queued durable jobs can obtain fresh source URLs. A job interrupted while downloading/finalizing is marked **Interrupted** and requires **Retry**. An uncertain cloud cleanup is not automatically replayed. Inspect the job message, destination and source before retrying or cleaning up.
+After restart, the engine can requeue eligible saved downloads and obtain fresh source URLs. It preserves paused and canceled intent. Jobs whose source, destination, staging evidence or ownership need inspection can remain **interrupted** or **Needs attention**. Read the message before choosing Retry. If the source changed, Retry accepts the refreshed source only after your explicit choice. An uncertain cloud cleanup is not replayed automatically.
 
 Only one process can own an engine state directory. If startup reports an ownership/recovery problem, confirm no engine/service is still using it. Do not delete ownership locks or recovery guards automatically. Keep a protected backup and obtain help with a minimal sanitized error description.
 
@@ -417,9 +486,15 @@ Only one process can own an engine state directory. If startup reports an owners
 | **No remote download roots** | Check the server config's allowed roots and service filesystem permissions. Restart the service after a deliberate config edit, then select **Use root**. |
 | **No rule matches / nothing starts** | Check engine/account status, pause state, selected source folder, extension/minimum-size filters, schedule/time zone and destination. Use **Check now** in Auto Downloads when resumed and inspect job errors. |
 | **Destination unavailable / permission error** | Check the actual engine host, mounted disk, free space and dedicated identity's write/traverse rights. For systemd, check `ReadWritePaths` too. Do not broadly relax permissions. |
+| **Staging cannot be enabled** | Choose an existing private engine-local directory. Remote mode also needs `stagingDirectory` in the server config. Check the service's writable paths and any staging-path-change notice. |
+| **Staging capacity / free-space reserve error** | Check free space on both volumes, retained staged jobs, the saved job limits and current budget/reserve. Resolve the cause before Retry; do not delete hidden partial or anchor files. |
 | **Completed but still on put.io** | Inspect the job's saved Keep/Delete choice and any cleanup warning. Changing a default later does not change that already queued job. |
+| **Downloaded - not verified** | The engine lacks enough source evidence for verified completion and retains the source. Inspect the downloaded result and source; a full progress bar does not resolve missing evidence. |
+| **Needs attention / source changed** | Read the job message, resolve storage/source/ownership concerns and use Retry only when available. A source-change Retry can replace the old partial. Keep state and retained files until recovery is understood. |
 | **Completed but absent from Jellyfin** | Check the real host/container mapping, library type, Jellyfin read permissions and library scan. The Manager may have saved a ZIP, which it does not extract. |
-| **Interrupted after restart** | Check the job message and destination, then explicitly **Retry** if appropriate. Do not remove history or state to force recovery. |
+| **Interrupted after restart** | Eligible work can requeue automatically; for a job still interrupted, check its message and destination, then choose **Retry** when appropriate. Do not remove history or state to force recovery. |
+| **Move unavailable in Remote mode** | Update the remote engine to a version advertising file-move support. Do not switch to Local just to make the control available. |
+| **Window disappeared after Close** | Check the system tray. Use **Show** to reopen it and **Quit** to exit the desktop process. |
 | **Linux desktop sandbox/runtime error** | Use your distribution's supported Electron prerequisites and sandbox configuration as an ordinary user; do not launch the GUI as root or add `--no-sandbox`. Headless mode uses the bundled Node runtime. |
 | **Unsigned app blocked** | Review the source/release provenance and your operating-system/organization policy. Do not disable protections as a workaround. |
 

@@ -21,6 +21,7 @@ export class RemoteEngine implements EngineClient {
       if (!res.ok) {
         if (res.status === 404) throw new RemoteRequestError("Remote engine version is incompatible. Update the remote server before using it.");
         let code = ""; try { const body: any = await res.json(); if (body && body.ok === false && typeof body.error?.code === "string") code = body.error.code; } catch { /* use generic error */ }
+        if (code === "move_rejected") throw new RemoteRequestError("put.io could not move the item to this folder.");
         const messages: Record<string, string> = { unauthorized: "Remote authorization failed.", conflict: "The remote engine cannot perform this action in its current state.", invalid_command: "The remote engine rejected the command or its settings.", invalid_request: "The remote engine rejected the request.", account_auth: "The server account needs authorization or validation.", provider_unavailable: "The server could not contact put.io or complete the request.", busy: "The remote engine is busy." };
         throw new RemoteRequestError(messages[code] || "Remote engine request failed.");
       }

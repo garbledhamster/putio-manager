@@ -35,7 +35,7 @@ function file(id, name, size = 4, parentId = '0', isFolder = false) {
 }
 
 function terminal(job) {
-  return ['completed', 'failed', 'canceled', 'skipped'].includes(job.status);
+  return ['completed', 'failed', 'canceled', 'needs-attention'].includes(job.status);
 }
 
 test('queue bounds concurrency and cancels both active and queued work', async (t) => {
@@ -56,13 +56,15 @@ test('queue bounds concurrency and cancels both active and queued work', async (
   await queue.enqueue(file('two', 'two.bin'), directory, async () => `${base}two`);
   await until(() => requests.includes('/one'), 'first request');
   assert.equal(queue.jobs[1].status, 'queued');
-  queue.cancel([queue.jobs[0].id, queue.jobs[1].id]);
+  await queue.cancel([queue.jobs[0].id, queue.jobs[1].id]);
   await until(() => queue.jobs.every(terminal), 'canceled jobs');
   assert.deepEqual(queue.jobs.map((job) => job.status), ['canceled', 'canceled']);
   assert.equal(peak, 1);
   assert.deepEqual(requests, ['/one']);
-  await until(async () => (await fs.readdir(directory)).length === 0, 'temporary file removal');
-  assert.deepEqual(await fs.readdir(directory), []);
+  const retained = await fs.readdir(directory);
+  assert.ok(retained.every(name => /^\.putio-[0-9a-f-]+\.download$/i.test(name)));
+  await assert.rejects(fs.lstat(path.join(directory, 'one.bin')), { code: 'ENOENT' });
+  await assert.rejects(fs.lstat(path.join(directory, 'two.bin')), { code: 'ENOENT' });
 });
 
 test('successful bytes survive a destination collision and truncated streams never clean up remotely', async (t) => {
@@ -79,21 +81,26 @@ test('successful bytes survive a destination collision and truncated streams nev
     res.end(req.url === '/first' ? 'good' : 'evil');
   });
   const cleaned = [];
-  const queue = new DownloadQueue(() => 1, () => {});
+  const runtime = { now: Date.now, random: () => 0, delay: (_ms, signal) => new Promise((resolve, reject) => signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), {once:true})) };
+  const queue = new DownloadQueue(() => 1, () => {}, undefined, undefined, undefined, {runtime});
+  t.after(() => queue.stopActive());
   await queue.enqueue(file('first', 'same.bin'), directory, async () => `${base}first`, async () => cleaned.push('first'));
   await until(() => queue.jobs[0].status === 'completed' && cleaned.includes('first'), 'first download and cleanup');
   assert.equal(await fs.readFile(path.join(directory, 'same.bin'), 'utf8'), 'good');
   await queue.enqueue(file('second', 'same.bin'), directory, async () => `${base}second`, async () => cleaned.push('second'));
   await until(() => terminal(queue.jobs[1]), 'collision');
-  assert.equal(queue.jobs[1].status, 'skipped');
+  assert.equal(queue.jobs[1].status, 'needs-attention');
   assert.equal(requests.includes('/second'), false);
   assert.equal(await fs.readFile(path.join(directory, 'same.bin'), 'utf8'), 'good');
   await queue.enqueue(file('third', 'partial.bin', 100), directory, async () => `${base}truncated`, async () => cleaned.push('third'));
-  await until(() => terminal(queue.jobs[2]), 'truncated download');
-  assert.equal(queue.jobs[2].status, 'failed');
+  await until(() => queue.jobs[2].status === 'waiting', 'truncated download waiting');
+  assert.equal(queue.jobs[2].status, 'waiting');
   assert.deepEqual(cleaned, ['first']);
-  await until(async () => (await fs.readdir(directory)).length === 1, 'partial file removal');
-  assert.deepEqual(await fs.readdir(directory), ['same.bin']);
+  const partial = queue.recovery[queue.jobs[2].id];
+  assert.ok(partial?.owned);
+  await until(async () => (await fs.readFile(path.join(directory, partial.partial), 'utf8')) === 'partial', 'retained partial bytes');
+  await assert.rejects(fs.lstat(path.join(directory, 'partial.bin')), { code: 'ENOENT' });
+  assert.equal(await fs.readFile(path.join(directory, 'same.bin'), 'utf8'), 'good');
 });
 
 test('overlapping scans share one traversal and match exact extensions, size and nested paths', async (t) => {

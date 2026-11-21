@@ -15,6 +15,7 @@ const bridge: PutioBridge = {
   resume: () => invoke("resume"),
   retryDownload: (id) => invoke("retryDownload", id),
   listFiles: (id) => invoke("listFiles", id),
+  moveFile: (id, parentId) => invoke("moveFile", id, parentId),
   renameFile: (id, name) => invoke("renameFile", id, name),
   createFolder: (id, name) => invoke("createFolder", id, name),
   deleteFile: (id) => invoke("deleteFile", id),
@@ -33,6 +34,9 @@ const bridge: PutioBridge = {
   prepareRuleDirectory: relative => invoke("prepareRuleDirectory", relative),
   removeRule: (id) => invoke("removeRule", id),
   checkRules: () => invoke("checkRules"),
+  onMagnetDestination: listener => { ipcRenderer.on("magnet-destination", (_event, id: string) => listener(id)); },
+  listMagnetFolders: (id, parent) => invoke("listMagnetFolders", id, parent),
+  finishMagnetDestination: (id, folder) => invoke("finishMagnetDestination", id, folder),
   onState: (listener) => {
     const handler = (_event: Electron.IpcRendererEvent, state: any) =>
       listener(state);

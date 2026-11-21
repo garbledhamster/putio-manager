@@ -3,6 +3,10 @@ export interface RemoteFile {
   parentId: string;
   name: string;
   size: number;
+  sizeKnown?: boolean;
+  crc32?: string;
+  sha1?: string;
+  updatedAt?: string;
   isFolder: boolean;
   contentType: string;
 }
@@ -19,6 +23,10 @@ export type RuleSchedule = { kind: "interval"; seconds: number } | { kind: "dail
 export interface DownloadOptions { deleteSourceFolders?: boolean; deleteAfterDownload?: boolean; speedLimitBytesPerSecond?: number }
 export interface Settings {
   downloadDirectory: string;
+  stageDownloads: boolean;
+  stagingDirectory: string;
+  stagingMaxBytes: number;
+  stagingMinimumFreeBytes: number;
   parallelDownloads: number;
   speedLimitBytesPerSecond: number;
   deleteAfterDownload: boolean;
@@ -53,16 +61,28 @@ export interface DownloadJob {
   deleteAfterDownload?: boolean;
   deleteSourceFolders?: boolean;
   speedLimitBytesPerSecond?: number;
+  deliveryPhase?: "downloading" | "copying" | "verifying-destination";
+  deliveryBytesCopied?: number;
+  stagingWarning?: string;
+  verification?: "verified" | "unverified";
+  cleanupStatus?: "not-started" | "succeeded" | "failed" | "unknown" | "not-required";
+  cleanupWarning?: string;
+  cleanupPending?: boolean;
+  totalKnown?: boolean;
+  retryAt?: string;
+  attemptCount?: number;
   completedAt?: string;
   error?: string;
 }
 export interface Snapshot {
+  fileMovesSupported?: boolean;
   settings: Settings;
   hasToken: boolean;
   secureStorageAvailable: boolean;
   rules: AutoDownloadRule[];
   jobs: DownloadJob[];
   scanStatus: string;
+  stagingNotice?: string;
   target?: { mode: "local" | "remote"; label: string; status: "connected" | "connecting" | "error"; message?: string };
   account?: { status: "disconnected" | "checking" | "connected" | "connecting" | "error"; message?: string };
   roots?: { id: string; label: string }[];
@@ -81,6 +101,7 @@ export interface PutioBridge {
   resume(): Promise<void>;
   retryDownload(id: string): Promise<void>;
   listFiles(parentId: string): Promise<RemoteFile[]>;
+  moveFile(id: string, parentId: string): Promise<void>;
   renameFile(id: string, name: string): Promise<void>;
   createFolder(parentId: string, name: string): Promise<void>;
   deleteFile(id: string): Promise<void>;
@@ -103,6 +124,9 @@ export interface PutioBridge {
   setMagnetRegistration(enabled: boolean): Promise<{startupSupported: boolean; startupEnabled: boolean; magnetSupported: boolean; magnetRegistered: boolean}>;
   removeRule(id: string): Promise<void>;
   checkRules(): Promise<void>;
+  onMagnetDestination(listener: (id: string) => void): void;
+  listMagnetFolders(id: string, parent: string): Promise<{ id: string; name: string }[]>;
+  finishMagnetDestination(id: string, folder: string | null): Promise<void>;
   onState(listener: (state: Snapshot) => void): () => void;
 }
 declare global {

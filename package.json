@@ -12,14 +12,14 @@
     "test:rules": "node --test tests/rules.test.cjs",
     "test:settings": "node --test tests/settings.test.cjs",
     "test:device-auth": "node --test tests/device-auth.test.cjs",
-    "test": "npm run test:api && npm run test:downloads && npm run test:rules && npm run test:settings && npm run test:integration && npm run test:device-auth && npm run test:engine && npm run test:remote && npm run test:platform",
+    "test": "npm run test:api && npm run test:downloads && npm run test:rules && npm run test:settings && npm run test:integration && npm run test:device-auth && npm run test:engine && npm run test:remote && npm run test:platform && npm run test:staged && npm run test:ui-messages",
     "test:ui": "electron . --smoke-test",
     "start": "electron .",
     "package": "electron-packager . PutioManager --out=release --overwrite --ignore=\"^/(?!dist($|/)|package.json$)\" --protocol=magnet --protocol-name=\"Magnet links\" --icon=src/ui/branding/putio-manager",
     "verify": "npm run typecheck && npm run build && npm test && npm run test:ui",
     "test:integration": "node --test tests/integration.test.cjs",
     "test:package": "node scripts/test-package.mts",
-    "test:engine": "node --test tests/engine.test.cjs",
+    "test:engine": "node --test tests/engine.test.cjs tests/download-resilience.test.cjs tests/cleanup-resilience.test.cjs tests/cleanup-publication-guards.test.cjs tests/api-recovery.test.cjs tests/zip-regeneration.test.cjs tests/terminal-diagnostics.test.cjs",
     "test:remote": "node --test tests/remote.test.cjs tests/cli.test.cjs",
     "test:ui-assets": "node scripts/test-ui-assets.mts",
     "test:platform": "node --test tests/platform.test.cjs tests/setup.test.cjs",
@@ -28,12 +28,14 @@
     "test:distribution:gui": "node scripts/test-distribution.mjs --gui",
     "release:archive": "node scripts/archive-distribution.mjs",
     "release:checksums": "node scripts/release-checksums.mjs",
-    "verify:public": "node scripts/verify-public-release.mjs source"
+    "verify:public": "node scripts/verify-public-release.mjs source",
+    "test:staged": "node --test tests/staged-delivery-tracer.test.cjs tests/staged-delivery-acceptance.test.cjs tests/staged-delivery-close.test.cjs tests/staged-delivery-helper.test.cjs && node --test tests/staged-delivery-resources.test.cjs && node --test tests/staged-delivery-engine-resources.test.cjs",
+    "test:ui-messages": "node --test tests/copy-messages.test.cjs"
   },
   "devDependencies": {
     "@electron/packager": "20.3.0",
     "@types/node": "24.10.13",
-    "electron": "45.2.3",
+    "electron": "45.4.1",
     "typescript": "7.0.2"
   },
   "license": "GPL-3.0-only"

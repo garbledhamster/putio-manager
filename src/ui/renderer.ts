@@ -1,5 +1,8 @@
-import type { RemoteFile, RemoteTransfer, Snapshot, Settings, AutoDownloadRule } from "../shared";
+import { enableTableColumns } from "./table-columns.js";
+import type { DownloadJob, RemoteFile, RemoteTransfer, Snapshot, Settings, AutoDownloadRule } from "../shared";
 import { icon } from "./icons.js";
+import { makeParagraphsCopyable, setCopyableMessage } from "./copy-message.js";
+import { canCheckRules, requestRuleCheck } from "./rule-check.js";
 
 type View = "files" | "downloads" | "transfers" | "rules" | "settings";
 type Field = {
@@ -32,10 +35,21 @@ let selectedFile: RemoteFile | undefined,
   selectedJob: string | undefined,
   selectedTransfer: string | undefined,
   selectedRule: string | undefined;
+let downloadSort: { index: number; direction: "ascending" | "descending" } | undefined;
 let transfers: RemoteTransfer[] = [],
   loading = false;
 let remoteConfig = { url: "", label: "Remote", hasCredential: false };
 let engineGeneration = 0;
+const searchInput = $<HTMLInputElement>("global-search");
+let searchTimer: number | undefined;
+let search: {
+  term: string;
+  transfers: RemoteTransfer[];
+  files: Map<string, { file: RemoteFile; ancestors: string[]; folder: string }>;
+  listings: Map<string, RemoteFile[]>;
+  pending: boolean;
+  errors: string[];
+} | undefined;
 let desktopIntegration: Awaited<ReturnType<typeof api.getDesktopIntegration>> | undefined;
 const children = new Map<string, RemoteFile[]>(),
   expanded = new Set<string>();
@@ -48,6 +62,19 @@ const root: RemoteFile = {
   contentType: "",
 };
 selectedFile = root;
+let movingFile = false;
+let draggedFile: RemoteFile | undefined;
+const fileDragType = "application/x-putio-file";
+
+function canMoveFile(file: RemoteFile | undefined): file is RemoteFile {
+  return !!file && /^[1-9]\d{0,19}$/.test(file.id) &&
+    !!state?.hasToken && state.fileMovesSupported === true && !movingFile;
+}
+
+function canChooseFolder(file: RemoteFile, folder: RemoteFile) {
+  return folder.isFolder && /^(0|[1-9]\d{0,19})$/.test(folder.id) &&
+    folder.id !== file.id && folder.id !== file.parentId;
+}
 function tool(
   id: string,
   label: string,
@@ -77,7 +104,7 @@ function tool(
   return b;
 }
 function showNotice(message = "", error = false) {
-  notice.textContent = message;
+  setCopyableMessage(notice, message);
   notice.className = message ? (error ? "error" : "status") : "";
   notice.setAttribute("role", error ? "alert" : "status");
 }
@@ -105,11 +132,16 @@ function renderTarget() {
   const transport = target?.status === "connected" ? "Online" : target?.status === "error" ? "Unavailable" : "Connecting";
   engineStatus.textContent = target ? `Engine: ${target.mode === "local" ? "Local" : "Remote"} · ${transport}` : "Engine: loading";
   engineStatus.title = target ? [engineStatus.textContent, target.mode === "remote" ? target.label : "", target.message ?? ""].filter(Boolean).join(" · ") : engineStatus.textContent;
+  const engineError = $("engine-error");
+  const errorMessage = target?.status === "error" ? target.message || "The selected engine is unavailable." : "";
+  engineError.hidden = !errorMessage;
+  engineError.className = errorMessage ? "error" : "";
+  setCopyableMessage(engineError, errorMessage);
   const account = $("account-status");
   account.textContent = `put.io: ${accountText(state)}`;
   account.dataset.state = state?.account?.status ?? "disconnected";
   const detail = document.getElementById("connection-status");
-  if (detail) { detail.dataset.state = state?.account?.status ?? "disconnected"; detail.textContent = `${accountText(state)}${state?.account?.message ? ` · ${state.account.message}` : ""}${state?.hasToken && state.account?.status !== "connected" ? " · Credential saved" : ""}`; }
+  if (detail) { detail.dataset.state = state?.account?.status ?? "disconnected"; setCopyableMessage(detail, `${accountText(state)}${state?.account?.message ? ` · ${state.account.message}` : ""}${state?.hasToken && state.account?.status !== "connected" ? " · Credential saved" : ""}`); }
   const connect = document.getElementById("settings-connect");
   if (connect) {
     const connected = state?.account?.status === "connected";
@@ -135,6 +167,7 @@ function renderToolbar() {
         img,
         () => {
           current = id;
+          clearSearch();
           render();
           if (id === "transfers") void loadTransfers();
         },
@@ -195,7 +228,7 @@ function renderToolbar() {
   if (current === "downloads") {
     actions.append(
       tool("downloads-pause", state?.paused ? "Resume downloads and scans" : "Pause downloads and scans", state?.paused ? "play" : "pause", () => void run(() => state?.paused ? api.resume() : api.pause()), state?.target?.status !== "connected"),
-      tool("downloads-retry", "Retry selected download", "refresh", () => void run(() => api.retryDownload(selectedJob!), "Retry queued."), !state?.jobs.some(j => j.id === selectedJob && ["failed", "canceled", "interrupted"].includes(j.status.toLowerCase()))),
+      tool("downloads-retry", "Retry selected download", "refresh", () => void run(() => api.retryDownload(selectedJob!), "Retry queued."), !state?.jobs.some(j => j.id === selectedJob && ["failed", "canceled", "interrupted", "needs-attention", "waiting"].includes(j.status.toLowerCase()))),
     );
     actions.append(
       tool(
@@ -207,7 +240,7 @@ function renderToolbar() {
             () => api.cancelDownloads([selectedJob!]),
             "Cancellation requested.",
           ),
-        !state?.jobs.some((job) => job.id === selectedJob && ["queued", "downloading"].includes(job.status.toLowerCase())),
+        !state?.jobs.some((job) => job.id === selectedJob && (job.cleanupPending === true || ["queued", "downloading", "copying", "paused", "waiting", "recovering", "restarting", "finalizing", "cleaning"].includes(job.status.toLowerCase()))),
       ),
       tool(
         "downloads-cancel-all",
@@ -215,7 +248,7 @@ function renderToolbar() {
         "x-circle",
         () => void run(() => api.cancelDownloads(), "Cancellation requested."),
         !state?.jobs.some((j) =>
-          ["queued", "downloading"].includes(j.status.toLowerCase()),
+          j.cleanupPending === true || ["queued", "downloading", "copying", "paused", "waiting", "recovering", "restarting", "finalizing", "cleaning"].includes(j.status.toLowerCase()),
         ),
       ),
       tool(
@@ -270,14 +303,15 @@ function renderToolbar() {
       ),
       tool(
         "rules-check",
-        "Check rules now",
+        state?.paused ? "Check rules now (unavailable while paused)" : "Check rules now",
         "check",
-        () => void run(() => api.checkRules(), "Rule check requested."),
-        !has || !state?.rules.length,
+        () => requestRuleCheck(!!state?.paused, () => void run(() => api.checkRules(), "Rule check requested.")),
+        !canCheckRules(has, state?.rules.length ?? 0, !!state?.paused),
       ),
     );
 }
 function render() {
+  if (view.querySelector(".column-adjusting")) return;
   const active = document.activeElement as HTMLElement | null;
   const inShell = !!active && (view.contains(active) || navigation.contains(active) || actions.contains(active));
   const row = inShell ? active?.closest<HTMLElement>("[data-file-id], [data-job-id], [data-transfer-id], [data-rule-id]") : null;
@@ -290,13 +324,28 @@ function render() {
   const scrollLeft = scroll?.scrollLeft ?? 0;
   renderTarget();
   renderToolbar();
+  if (search) actions.replaceChildren();
   view.replaceChildren();
-  if (!state) view.append(node("p", "Loading settings…"));
+  if (search) renderSearch();
+  else if (!state) view.append(node("p", "Loading settings…"));
   else if (current === "files") renderFiles();
   else if (current === "downloads") renderDownloads();
   else if (current === "transfers") renderTransfers();
   else if (current === "rules") renderRules();
   else renderSettings();
+  const table = view.querySelector<HTMLTableElement>("table");
+  if (table) {
+    enableTableColumns(table, render, table.id === "downloads-table" ? {
+      current: downloadSort,
+      change: index => {
+        const direction = downloadSort?.index === index && downloadSort.direction === "ascending"
+          ? "descending" : "ascending";
+        downloadSort = { index, direction };
+        render();
+      },
+    } : undefined);
+  }
+  makeParagraphsCopyable(view);
   const newScroll = view.querySelector<HTMLElement>(".table-wrap, .tree");
   if (newScroll) { newScroll.scrollTop = scrollTop; newScroll.scrollLeft = scrollLeft; }
   let replacement = activeId ? document.getElementById(activeId) : null;
@@ -306,7 +355,118 @@ function render() {
     replacement = expanderFocused ? newRow?.querySelector<HTMLElement>(".expander") ?? null : newRow;
   }
   if (replacement && !(replacement as HTMLButtonElement).disabled) replacement.focus({ preventScroll: true });
+  syncContextMenu();
 }
+function clearSearch() {
+  window.clearTimeout(searchTimer);
+  searchInput.value = "";
+  search = undefined;
+}
+searchInput.addEventListener("input", () => {
+  window.clearTimeout(searchTimer);
+  const term = searchInput.value.trim().toLocaleLowerCase();
+  if (!term) { search = undefined; render(); return; }
+  const session: NonNullable<typeof search> = {
+    term, transfers: [], files: new Map(), listings: new Map(), pending: !!state?.hasToken, errors: [],
+  };
+  search = session;
+  render();
+  if (session.pending) searchTimer = window.setTimeout(() => void searchAccount(session), 300);
+});
+searchInput.addEventListener("keydown", event => {
+  if (event.key === "Escape" && search) { event.preventDefault(); clearSearch(); render(); }
+});
+
+async function searchAccount(session: NonNullable<typeof search>) {
+  const generation = engineGeneration;
+  const active = () => search === session && generation === engineGeneration;
+  const renderResults = () => { if (active()) render(); };
+  const searchTransfers = async () => {
+    try { session.transfers = await api.listTransfers(); }
+    catch { session.errors.push("Transfers could not be loaded."); }
+    renderResults();
+  };
+  const searchFiles = async () => {
+    const queue = [{ id: "0", ancestors: [] as string[], folder: "put.io files" }];
+    const visited = new Set(["0"]);
+    for (let index = 0; index < queue.length && active(); index++) {
+      const parent = queue[index];
+      let files: RemoteFile[];
+      try { files = await api.listFiles(parent.id); }
+      catch {
+        if (!session.errors.includes("Some put.io folders could not be searched.")) session.errors.push("Some put.io folders could not be searched.");
+        if (index === 0) break;
+        continue;
+      }
+      if (!active()) return;
+      session.listings.set(parent.id, files);
+      const ancestors = [...parent.ancestors, parent.id];
+      let found = false;
+      for (const file of files) {
+        if (file.name.toLocaleLowerCase().includes(session.term)) {
+          session.files.set(file.id, { file, ancestors, folder: parent.folder });
+          found = true;
+        }
+        if (file.isFolder && !visited.has(file.id)) {
+          visited.add(file.id);
+          queue.push({ id: file.id, ancestors, folder: file.name });
+        }
+      }
+      if (found) renderResults();
+    }
+  };
+  await Promise.all([searchFiles(), searchTransfers()]);
+  session.pending = false;
+  renderResults();
+}
+
+function renderSearch() {
+  const session = search!;
+  title("Search results");
+  const list = node("ul");
+  list.className = "search-results";
+  const matches = (...values: string[]) => values.some(value => value.toLocaleLowerCase().includes(session.term));
+  const add = (destination: View, id: string, name: string, detail: string, select: () => void) => {
+    const row = node("li");
+    const item = button(name, "search-" + destination + "-" + id, () => {
+      clearSearch();
+      current = destination;
+      select();
+      render();
+      const row = view.querySelector<HTMLElement>(".selected");
+      row?.scrollIntoView({ block: "nearest", inline: "nearest" });
+      row?.focus({ preventScroll: true });
+    });
+    item.append(node("small", detail));
+    row.append(item);
+    list.append(row);
+  };
+  for (const job of state?.jobs ?? []) if (matches(job.name, job.destination)) {
+    add("downloads", job.id, job.name, "Downloads · " + job.status, () => { selectedJob = job.id; });
+  }
+  for (const transfer of session.transfers) if (matches(transfer.name)) {
+    add("transfers", transfer.id, transfer.name, "Transfers · " + transfer.status, () => {
+      transfers = session.transfers;
+      selectedTransfer = transfer.id;
+    });
+  }
+  for (const rule of state?.rules ?? []) if (matches(rule.folderName, rule.downloadDirectory)) {
+    add("rules", rule.id, rule.folderName, "Auto Downloads · " + rule.downloadDirectory, () => { selectedRule = rule.id; });
+  }
+  for (const { file, ancestors, folder } of session.files.values()) {
+    add("files", file.id, file.name, "Files · " + folder, () => {
+      for (const id of ancestors) { children.set(id, session.listings.get(id)!); expanded.add(id); }
+      selectedFile = file;
+    });
+  }
+  if (list.children.length) view.append(list);
+  const status = node("p", session.pending ? "Searching put.io folders and transfers…" : list.children.length ? "" : "No matching items.");
+  status.className = "hint";
+  status.setAttribute("role", "status");
+  view.append(status);
+  if (session.errors.length) view.append(node("p", session.errors.join(" ")));
+}
+
 function title(text: string) {
   view.append(node("h1", text));
 }
@@ -319,12 +479,321 @@ function rowSelect(row: HTMLElement, fn: () => void) {
   row.tabIndex = 0;
   row.addEventListener("click", fn);
   row.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" || e.key === " ") {
+    if (e.target === row && (e.key === "Enter" || e.key === " ")) {
       e.preventDefault();
       fn();
     }
   });
 }
+
+type MenuAction = { id: string; label: string; image: string };
+type MenuGroup = { name: string; image: string; actions: MenuAction[] };
+const fileMenu: MenuGroup[] = [
+  { name: "Download", image: "download", actions: [{id:"files-download",label:"Download",image:"download"},{id:"files-zip",label:"Download ZIP",image:"zip"}] },
+  { name: "Manage", image: "rules", actions: [{id:"files-refresh",label:"Refresh all visible folders",image:"refresh"},{id:"files-rename",label:"Rename...",image:"rename"},{id:"files-move",label:"Move…",image:"folder"},{id:"files-create",label:"New folder...",image:"create"},{id:"files-rule",label:"Auto download...",image:"add"},{id:"files-delete",label:"Delete from put.io...",image:"delete"}] },
+];
+const downloadMenu: MenuGroup[] = [
+  { name:"Recovery",image:"refresh",actions:[{id:"downloads-retry",label:"Retry download",image:"refresh"}] },
+  { name:"Manage",image:"rules",actions:[{id:"downloads-cancel",label:"Cancel download",image:"cancel"}] },
+  { name:"Inspect",image:"document",actions:[{id:"downloads-open",label:"Open download folder",image:"open"}] },
+];
+let contextMenu: HTMLElement | undefined;
+let contextOwner: { view: "files" | "downloads"; id: string; more: boolean } | undefined;
+function ownerElement() {
+  if (!contextOwner) return null;
+  const attribute = contextOwner.view === "files" ? "file-id" : "job-id";
+  const row = view.querySelector<HTMLElement>(`[data-${attribute}="${CSS.escape(contextOwner.id)}"]`);
+  return contextOwner.more ? row?.querySelector<HTMLButtonElement>(".row-more") ?? row : row;
+}
+function closeContextMenu(restore = false) {
+  const owner = ownerElement();
+  contextMenu?.remove(); contextMenu = undefined;
+  contextOwner = undefined;
+  view.querySelectorAll<HTMLButtonElement>(".row-more[aria-expanded=true]").forEach(button => button.setAttribute("aria-expanded", "false"));
+  if (restore) owner?.focus({preventScroll:true});
+}
+function positionMenu(menu: HTMLElement, x: number, y: number) {
+  const rect = menu.getBoundingClientRect();
+  menu.style.left = `${Math.max(4, Math.min(x, innerWidth - rect.width - 4))}px`;
+  menu.style.top = `${Math.max(4, Math.min(y, innerHeight - rect.height - 4))}px`;
+}
+function syncContextMenu() {
+  if (!contextMenu || !contextOwner) return;
+  const valid = current === contextOwner.view && (contextOwner.view === "files" ? selectedFile?.id === contextOwner.id : selectedJob === contextOwner.id && state?.jobs.some(job => job.id === contextOwner?.id));
+  if (!valid || !ownerElement()) { closeContextMenu(); return; }
+  if (contextOwner.more) ownerElement()?.setAttribute("aria-expanded", "true");
+  contextMenu.querySelectorAll<HTMLButtonElement>("[data-context-action]").forEach(button => {
+    if (button.dataset.contextAction === "files-move") {
+      button.setAttribute("aria-disabled", String(!canMoveFile(selectedFile)));
+      button.title = state?.target?.mode === "remote" && !state.fileMovesSupported
+        ? "Update the remote engine to move files." : "";
+      return;
+    }
+    const target = document.getElementById(button.dataset.contextAction!) as HTMLButtonElement | null;
+    button.setAttribute("aria-disabled", String(!target || target.disabled));
+  });
+}
+function openContextMenu(kind: "files" | "downloads", id: string, x: number, y: number, more: boolean) {
+  closeContextMenu();
+  contextOwner = {view:kind,id,more};
+  const menu = node("div"); menu.className = "context-menu"; menu.setAttribute("role", "menu"); menu.setAttribute("aria-label", kind === "files" ? "File actions" : "Download actions");
+  contextMenu = menu; document.body.append(menu);
+  const groups = kind === "files" ? fileMenu : downloadMenu;
+  const closeSubmenu = () => {
+    menu.querySelector(".context-submenu")?.remove();
+    menu.querySelectorAll<HTMLButtonElement>("[data-group]").forEach(button => button.setAttribute("aria-expanded", "false"));
+  };
+  groups.forEach((group, index) => {
+    const button = node("button"); button.type="button"; button.className="context-item"; button.dataset.group=group.name;
+    button.setAttribute("role", "menuitem"); button.setAttribute("aria-haspopup", "menu"); button.setAttribute("aria-expanded", "false");
+    const submenuId = `context-submenu-${index}`; button.setAttribute("aria-controls", submenuId);
+    const label = node("span",group.name); label.className="context-label";
+    button.append(icon(group.image),label,icon("chevron-right")); menu.append(button);
+    button.addEventListener("click", () => {
+      closeSubmenu(); button.setAttribute("aria-expanded", "true");
+      const sub = node("div"); sub.id=submenuId; sub.className="context-menu context-submenu"; sub.setAttribute("role", "menu"); sub.setAttribute("aria-label",group.name); menu.append(sub);
+      group.actions.forEach(action => {
+        const item = node("button"); item.type="button"; item.className="context-item"; item.dataset.contextAction=action.id; item.setAttribute("role","menuitem");
+        if(action.id === "files-delete") item.classList.add("danger");
+        const text = node("span",action.label); text.className="context-label"; item.append(icon(action.image),text); sub.append(item);
+        item.addEventListener("click", () => {
+          if (action.id === "files-move") {
+            if (!canMoveFile(selectedFile)) return;
+            const anchor = item.getBoundingClientRect();
+            closeContextMenu(true);
+            openMovePicker(selectedFile, anchor.left, anchor.top);
+            return;
+          }
+          const target = document.getElementById(action.id) as HTMLButtonElement | null;
+          if (!target || target.disabled) return;
+          closeContextMenu(true); target.click();
+        });
+      });
+      syncContextMenu();
+      const bounds = button.getBoundingClientRect(), subRect = sub.getBoundingClientRect(), parentRect = menu.getBoundingClientRect();
+      if (innerWidth < parentRect.width + subRect.width + 8) {
+        const below = parentRect.bottom + subRect.height <= innerHeight - 4;
+        positionMenu(sub, parentRect.left, below ? parentRect.bottom : parentRect.top - subRect.height);
+      } else positionMenu(sub, bounds.right + subRect.width <= innerWidth - 4 ? bounds.right : bounds.left - subRect.width, bounds.top);
+      sub.querySelector<HTMLButtonElement>(".context-item")?.focus();
+    });
+  });
+  menu.addEventListener("keydown", event => {
+    const active = document.activeElement as HTMLElement;
+    const sub = active.closest<HTMLElement>(".context-submenu");
+    const container = sub ?? menu;
+    const items = Array.from(container.querySelectorAll<HTMLButtonElement>(sub ? ":scope > .context-item" : ":scope > [data-group]"));
+    const index = items.indexOf(active as HTMLButtonElement);
+    if (["ArrowDown","ArrowUp","Home","End"].includes(event.key)) {
+      event.preventDefault(); const next = event.key === "Home" ? 0 : event.key === "End" ? items.length - 1 : (index + (event.key === "ArrowDown" ? 1 : -1) + items.length) % items.length; items[next]?.focus();
+    } else if (event.key === "ArrowRight" && !sub) { event.preventDefault(); (active as HTMLButtonElement).click(); }
+    else if ((event.key === "ArrowLeft" || event.key === "Escape") && sub) { event.preventDefault(); const parent = menu.querySelector<HTMLButtonElement>('[aria-expanded="true"]'); closeSubmenu(); parent?.focus(); }
+    else if (event.key === "Escape") { event.preventDefault(); closeContextMenu(true); }
+    else if (event.key === "Tab") closeContextMenu(true);
+  });
+  const width = menu.getBoundingClientRect().width;
+  const menuX = innerWidth >= width * 2 + 8 ? Math.min(x, innerWidth - width * 2 - 4) : x;
+  positionMenu(menu,menuX,y); syncContextMenu(); menu.querySelector<HTMLButtonElement>("[data-group]")?.focus();
+}
+function addRowContext(row: HTMLElement, kind: "files" | "downloads", id: string, name: string, select: () => void) {
+  const open = (x: number, y: number, more: boolean) => {
+    select(); render();
+    const attribute = kind === "files" ? "file-id" : "job-id";
+    const replacement = view.querySelector<HTMLElement>(`[data-${attribute}="${CSS.escape(id)}"]`);
+    if (replacement) openContextMenu(kind,id,x,y,more);
+  };
+  row.addEventListener("contextmenu", event => { event.preventDefault(); open(event.clientX,event.clientY,false); });
+  row.addEventListener("keydown", event => {
+    if (event.target === row && (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10"))) { event.preventDefault(); const r=row.getBoundingClientRect(); open(r.left,r.bottom,false); }
+  });
+  const more = node("button", "•••"); more.type="button"; more.className="row-more"; more.setAttribute("aria-label", `More actions for ${name}`); more.setAttribute("aria-haspopup","menu"); more.setAttribute("aria-expanded","false");
+  more.addEventListener("click", event => { event.stopPropagation(); const r=more.getBoundingClientRect(); open(r.left,r.bottom,true); });
+  if (kind === "files") row.append(more);
+  else row.firstElementChild?.prepend(more);
+}
+document.addEventListener("pointerdown", event => { if (contextMenu && !contextMenu.contains(event.target as Node)) closeContextMenu(); });
+window.addEventListener("resize", () => { if (contextMenu) closeContextMenu(); });
+
+function openMovePicker(file: RemoteFile, x: number, y: number) {
+  const generation = engineGeneration;
+  const picker = node("dialog");
+  picker.className = "move-picker";
+  picker.setAttribute("aria-labelledby", "move-title");
+  const heading = node("h2", "Move to folder");
+  heading.id = "move-title";
+  const source = node("p", file.name);
+  source.className = "move-source";
+  source.title = file.name;
+  const tree = node("ul");
+  tree.className = "move-tree";
+  tree.setAttribute("aria-label", "Destination folders");
+  const footer = node("footer");
+  const cancel = node("button", "Cancel");
+  cancel.autofocus = true;
+  const confirm = node("button", "Move here");
+  confirm.className = "button";
+  confirm.disabled = true;
+  footer.append(cancel, confirm);
+  picker.append(heading, source, tree, footer);
+
+  let destination: RemoteFile | undefined;
+  let selectedButton: HTMLButtonElement | undefined;
+  function addFolder(list: HTMLUListElement, folder: RemoteFile, depth: number, ancestors: string[]) {
+    if (folder.id === file.id || ancestors.includes(folder.id) || !/^(0|[1-9]\d{0,19})$/.test(folder.id)) return;
+    const item = node("li");
+    const row = node("div");
+    row.className = "move-folder-row";
+    row.style.paddingLeft = `${Math.min(depth, 8) * 14}px`;
+    const expand = node("button");
+    expand.className = "expander";
+    const label = folder.id === "0" ? "Put.io root" : folder.name;
+    const choose = node("button");
+    choose.className = "context-item move-folder";
+    choose.dataset.moveFolder = folder.id;
+    choose.disabled = !canChooseFolder(file, folder);
+    choose.setAttribute("aria-pressed", "false");
+    const labelText = node("span", label);
+    choose.title = choose.disabled ? `${label} (current folder)` : label;
+    choose.append(icon("folder"), labelText);
+    choose.addEventListener("click", () => {
+      selectedButton?.setAttribute("aria-pressed", "false");
+      selectedButton = choose;
+      choose.setAttribute("aria-pressed", "true");
+      destination = folder;
+      confirm.disabled = false;
+    });
+    const branch = node("ul");
+    branch.hidden = true;
+    let loaded = false;
+    let fetching = false;
+    async function toggle() {
+      branch.hidden = !branch.hidden;
+      expand.setAttribute("aria-expanded", String(!branch.hidden));
+      expand.setAttribute("aria-label", `${branch.hidden ? "Expand" : "Collapse"} ${label}`);
+      expand.replaceChildren(icon(branch.hidden ? "chevron-right" : "chevron-down"));
+      if (branch.hidden || loaded || fetching) return;
+      const status = node("li", "Loading folders…");
+      status.className = "move-branch-status";
+      status.setAttribute("role", "status");
+      branch.replaceChildren(status);
+      fetching = true;
+      try {
+        const files = await api.listFiles(folder.id);
+        if (!picker.open || generation !== engineGeneration) return;
+        branch.replaceChildren();
+        for (const child of files.filter(item => item.isFolder)) addFolder(branch, child, depth + 1, [...ancestors, folder.id]);
+        if (!branch.childElementCount) {
+          status.textContent = "No subfolders";
+          branch.append(status);
+        }
+        loaded = true;
+      } catch {
+        status.textContent = "Couldn’t load folders. Collapse and expand to retry.";
+      } finally {
+        fetching = false;
+      }
+    }
+    expand.setAttribute("aria-expanded", "false");
+    expand.setAttribute("aria-label", `Expand ${label}`);
+    expand.append(icon("chevron-right"));
+    expand.addEventListener("click", () => void toggle());
+    row.append(expand, choose);
+    item.append(row, branch);
+    list.append(item);
+    if (folder.id === "0") void toggle();
+  }
+
+  const reposition = () => positionMenu(picker, x, y);
+  picker.addEventListener("close", () => {
+    window.removeEventListener("resize", reposition);
+    picker.remove();
+  });
+  cancel.addEventListener("click", () => picker.close());
+  confirm.addEventListener("click", () => {
+    if (!destination) return;
+    picker.close();
+    if (generation === engineGeneration) void moveFile(file, destination);
+  });
+  document.body.append(picker);
+  picker.showModal();
+  addFolder(tree, root, 0, []);
+  reposition();
+  window.addEventListener("resize", reposition);
+}
+
+async function moveFile(file: RemoteFile, folder: RemoteFile) {
+  if (!canMoveFile(file) || !canChooseFolder(file, folder)) return;
+  const generation = engineGeneration;
+  movingFile = true;
+  showNotice(`Moving “${file.name}”…`);
+  try {
+    await api.moveFile(file.id, folder.id);
+    if (generation !== engineGeneration) return;
+    const source = children.get(file.parentId);
+    if (source) children.set(file.parentId, source.filter(item => item.id !== file.id));
+    const visibleFolder = view.querySelector(`[data-file-id="${CSS.escape(folder.id)}"]`);
+    if (visibleFolder) expanded.add(folder.id);
+    const affected = [file.parentId, folder.id].filter(id => children.has(id) || expanded.has(id));
+    const refreshed = await Promise.allSettled(affected.map(id => api.listFiles(id)));
+    if (generation !== engineGeneration) return;
+    refreshed.forEach((result, index) => {
+      if (result.status === "fulfilled") children.set(affected[index], result.value);
+    });
+    if (selectedFile?.id === file.id) {
+      selectedFile = visibleFolder
+        ? children.get(folder.id)?.find(item => item.id === file.id) ?? folder
+        : root;
+    }
+    if (refreshed.some(result => result.status === "rejected"))
+      showNotice("Item moved. Refresh Files to update the folder listing.", true);
+    else showNotice(`Moved “${file.name}” to ${folder.id === "0" ? "Put.io root" : folder.name}.`);
+  } catch (error) {
+    if (generation === engineGeneration) showNotice(error instanceof Error ? error.message : "Couldn’t move the item.", true);
+  } finally {
+    movingFile = false;
+    if (current === "files") render();
+  }
+}
+
+function addFileDrag(row: HTMLElement, file: RemoteFile, ancestors: string[]) {
+  // Keep the source draggable during pending renders. The start handler checks current state.
+  row.draggable = /^[1-9]\d{0,19}$/.test(file.id) && state?.fileMovesSupported === true;
+  row.addEventListener("dragstart", event => {
+    if (!event.dataTransfer || !canMoveFile(file)) { event.preventDefault(); return; }
+    draggedFile = file;
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData(fileDragType, file.id);
+    row.classList.add("dragging");
+    closeContextMenu();
+  });
+  row.addEventListener("dragend", () => {
+    draggedFile = undefined;
+    row.classList.remove("dragging");
+    view.querySelector(".drop-target")?.classList.remove("drop-target");
+  });
+  if (!file.isFolder) return;
+  row.addEventListener("dragover", event => {
+    if (!event.dataTransfer?.types.includes(fileDragType) || !canMoveFile(draggedFile) ||
+      !canChooseFolder(draggedFile, file) || ancestors.includes(draggedFile.id)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "move";
+    row.classList.add("drop-target");
+  });
+  row.addEventListener("dragleave", event => {
+    if (!(event.relatedTarget instanceof Node) || !row.contains(event.relatedTarget))
+      row.classList.remove("drop-target");
+  });
+  row.addEventListener("drop", event => {
+    row.classList.remove("drop-target");
+    const source = draggedFile;
+    if (!canMoveFile(source) || event.dataTransfer?.getData(fileDragType) !== source.id ||
+      !canChooseFolder(source, file) || ancestors.includes(source.id)) return;
+    event.preventDefault();
+    draggedFile = undefined;
+    void moveFile(source, file);
+  });
+}
+
 function renderFiles() {
   title("Files");
   const panel = node("div");
@@ -335,7 +804,7 @@ function renderFiles() {
     view.append(panel);
     return;
   }
-  function draw(file: RemoteFile, depth: number) {
+  function draw(file: RemoteFile, depth: number, ancestors: string[]) {
     const line = node("div");
     line.className = `tree-row${selectedFile?.id === file.id ? " selected" : ""}`;
     line.dataset.fileId = file.id;
@@ -364,11 +833,13 @@ function renderFiles() {
       selectedFile = file;
       render();
     });
+    addRowContext(line, "files", file.id, file.name, () => { selectedFile = file; });
+    addFileDrag(line, file, ancestors);
     panel.append(line);
     if (file.isFolder && expanded.has(file.id))
-      for (const child of children.get(file.id) || []) draw(child, depth + 1);
+      for (const child of children.get(file.id) || []) draw(child, depth + 1, [...ancestors, file.id]);
   }
-  draw(root, 0);
+  draw(root, 0, []);
   if (loading) panel.append(node("p", "Loading files…"));
   else if (expanded.has("0") && children.get("0")?.length === 0)
     empty(panel, "This folder is empty.");
@@ -435,6 +906,19 @@ function compactDate(value?: string): string {
   }).format(date);
 }
 
+function downloadType(job: DownloadJob) {
+  return job.name.match(/\.([^.]+)$/)?.[1].toUpperCase() ?? "File";
+}
+
+const downloadCollator = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
+const downloadSortValues: Array<(job: DownloadJob) => string | number> = [
+  job => job.name,
+  downloadType,
+  job => Date.parse(job.addedAt),
+  job => Date.parse(job.completedAt ?? ""),
+  job => job.status,
+];
+
 function renderDownloads() {
   title("Downloads");
   if (state?.paused) view.append(node("p", "Downloads and automatic scans are paused."));
@@ -442,32 +926,61 @@ function renderDownloads() {
     ["File", "Type", "Added", "Completed", "Status"],
     "downloads-table",
   );
-  for (const j of state!.jobs) {
+  const jobs = [...state!.jobs];
+  if (downloadSort) {
+    const value = downloadSortValues[downloadSort.index];
+    const direction = downloadSort.direction === "ascending" ? 1 : -1;
+    jobs.sort((a, b) => {
+      const left = value(a);
+      const right = value(b);
+      if (typeof left === "number" && typeof right === "number") {
+        if (Number.isNaN(left)) return Number.isNaN(right) ? 0 : 1;
+        if (Number.isNaN(right)) return -1;
+        return direction * (left - right);
+      }
+      return direction * downloadCollator.compare(String(left), String(right));
+    });
+  }
+  for (const j of jobs) {
     const tr = node("tr");
     tr.dataset.jobId = j.id;
     if (selectedJob === j.id) tr.className = "selected";
     const fileCell = node("td", j.name);
-    fileCell.title = j.destination;
+    fileCell.title = j.name + "\n" + j.destination;
     fileCell.setAttribute("aria-label", `${j.name}; destination ${j.destination}`);
-    const extension = j.name.match(/\.([^.]+)$/)?.[1];
     tr.append(
       fileCell,
-      node("td", extension ? extension.toUpperCase() : "File"),
+      node("td", downloadType(j)),
       node("td", compactDate(j.addedAt)),
       node("td", compactDate(j.completedAt)),
     );
     const status = node("td");
     status.className = "download-status";
-    status.append(node("div", j.error ? `${j.status}: ${j.error}` : j.status));
+    const statusText = j.status === "unverified" ? "Downloaded - not verified"
+      : j.status === "needs-attention" ? "Needs attention"
+      : j.status === "waiting" ? `Waiting${j.retryAt ? ` · Retry at ${compactDate(j.retryAt)}` : ""}`
+      : j.status === "copying" ? "Copying"
+      : j.status === "paused" && j.deliveryPhase === "copying" ? "Copy paused"
+      : j.status === "finalizing" && j.deliveryPhase === "verifying-destination" ? "Verifying destination"
+      : j.status === "recovering" ? "Recovering"
+      : j.status === "restarting" ? "Restarting"
+      : j.status;
+    const primary = node("div");
+    const message = j.error ? `${statusText}: ${j.error}` : statusText;
+    setCopyableMessage(primary, message);
+    status.append(primary);
+    if (j.cleanupWarning) { const warning = node("div"); setCopyableMessage(warning, j.cleanupWarning); status.append(warning); }
+    if (j.stagingWarning) { const warning = node("div"); setCopyableMessage(warning, j.stagingWarning); status.append(warning); }
+    const showingCopy = j.deliveryPhase === "copying" && ["copying", "paused", "needs-attention", "interrupted"].includes(j.status);
     const progress = node("progress");
     progress.max = j.totalBytes || 1;
-    progress.value = j.bytesReceived;
+    progress.value = showingCopy ? (j.deliveryBytesCopied ?? 0) : j.bytesReceived;
     progress.setAttribute("aria-label", `${j.name} progress`);
     const detail = node("div");
     detail.className = "download-progress";
     detail.append(
       progress,
-      node("span", `${size(j.bytesReceived)} / ${size(j.totalBytes)}`),
+      node("span", `${size(showingCopy ? (j.deliveryBytesCopied ?? 0) : j.bytesReceived)} / ${j.totalKnown === false ? "Unknown" : size(j.totalBytes)}`),
     );
     status.append(detail, node("div", `Job limit: ${speedText(j.speedLimitBytesPerSecond ?? 0)}`));
     tr.append(status);
@@ -475,6 +988,7 @@ function renderDownloads() {
       selectedJob = j.id;
       render();
     });
+    addRowContext(tr, "downloads", j.id, j.name, () => { selectedJob = j.id; });
     body.append(tr);
   }
   if (!state!.jobs.length)
@@ -533,6 +1047,7 @@ function renderRules() {
   title("Auto Downloads");
   const status = node("p", `Scan status: ${state!.scanStatus} · Engine time zone: ${state!.timeZone}. Missed runs are skipped while offline or paused. A nonexistent daylight-saving time is skipped; a repeated time runs once at its first occurrence. Intervals restart on resume.`);
   status.id = "scan-status";
+  if (state!.paused) status.textContent += " Rule checks are unavailable while the engine is paused; resume it to check rules.";
   view.append(status);
   const body = table(
     [
@@ -584,13 +1099,30 @@ function inputField(
   const inp = node("input");
   inp.id = id;
   inp.type = type;
-  if (typeof value === "boolean") inp.checked = value;
-  else inp.value = value;
+  if (typeof value === "boolean") inp.defaultChecked = value;
+  else inp.defaultValue = value;
   wrap.append(type === "checkbox" ? inp : node("span", label));
   if (type === "checkbox") wrap.append(node("span", label));
   else wrap.append(inp);
   parent.append(wrap);
   return inp;
+}
+function isEditedSetting(input: HTMLInputElement | null): boolean {
+  if (!input || input.readOnly || input.disabled) return false;
+  // The form defaults are the last values received from the engine or desktop.
+  return input.type === "checkbox" || input.type === "radio"
+    ? input.checked !== input.defaultChecked
+    : input.value !== input.defaultValue;
+}
+function refreshSettings() {
+  const editedInputs = [...view.querySelectorAll<HTMLInputElement>("#settings-content input")].filter(isEditedSetting);
+  render();
+  for (const edit of editedInputs) {
+    const input = $<HTMLInputElement>(edit.id);
+    if (!input || input.readOnly || input.disabled) continue;
+    if (input.type === "checkbox" || input.type === "radio") input.checked = edit.checked;
+    else input.value = edit.value;
+  }
 }
 function button(label: string, id: string, fn: () => void, cls = "secondary") {
   const b = node("button", label);
@@ -624,6 +1156,12 @@ function renderSettings() {
   content.className = "settings-content";
   content.id = "settings-content";
   const s = state!.settings;
+  if ((settingsTab === "downloads" || settingsTab === "interface") && state!.target?.status !== "connected") {
+    content.append(node("p", "Settings will load when the selected engine is online."));
+    layout.append(nav, content);
+    view.append(layout);
+    return;
+  }
   if (settingsTab === "setup") {
     content.append(node("p", `Setup uses the selected ${state!.target?.mode === "remote" ? "Remote server" : "Local computer"} engine. Downloads are saved on that host.`));
     content.append(node("p", "1. Select an engine and connect your put.io account in General."));
@@ -710,7 +1248,6 @@ function renderSettings() {
         () =>
           void run(async () => {
             const d = await api.chooseDirectory();
-            if (d) $("settings-directory").setAttribute("value", d);
             if (d) ($("settings-directory") as HTMLInputElement).value = d;
           }),
       ),
@@ -725,6 +1262,18 @@ function renderSettings() {
       if (!state!.roots?.length) row.append(node("p", "No remote download roots are configured."));
     }
     content.append(row);
+    if (typeof s.stageDownloads === "boolean" && typeof s.stagingDirectory === "string" && typeof s.stagingMaxBytes === "number" && typeof s.stagingMinimumFreeBytes === "number") {
+      inputField(content, "Download locally before copying to destination", "settings-stage-downloads", "checkbox", s.stageDownloads);
+      const stageRow = node("div"); stageRow.className = "directory-row";
+      const stagePath = inputField(stageRow, "Engine staging directory", "settings-staging-directory", "text", s.stagingDirectory);
+      if (state!.target?.mode === "remote") stagePath.readOnly = true;
+      else stageRow.append(button("Browse", "settings-staging-browse", () => void run(async () => { const d = await api.chooseDirectory(); if (d) stagePath.value = d; })));
+      content.append(stageRow);
+      const stageBudget = inputField(content, "Staging budget (GiB)", "settings-staging-budget", "number", String(s.stagingMaxBytes / 1024 ** 3)); stageBudget.min = "0"; stageBudget.step = "any";
+      const stageReserve = inputField(content, "Free-space reserve (GiB)", "settings-staging-reserve", "number", String(s.stagingMinimumFreeBytes / 1024 ** 3)); stageReserve.min = "0"; stageReserve.step = "any";
+      const help = node("p", "Uses storage on the selected engine; applies to new downloads."); help.className = "hint"; content.append(help);
+      if (state!.stagingNotice) { const notice = node("p", state!.stagingNotice); notice.className = "hint"; content.append(notice); }
+    }
     const parallel = inputField(
       content,
       "Parallel downloads",
@@ -746,7 +1295,7 @@ function renderSettings() {
     for (const [value, label] of [["true", "Delete files from Put.io"], ["false", "Don't delete files from Put.io"]]) {
       const wrap = node("label"); wrap.className = "field inline";
       const radio = node("input"); radio.type = "radio"; radio.name = "settings-delete"; radio.value = value;
-      radio.id = value === "true" ? "settings-delete-after" : "settings-keep-after"; radio.checked = String(s.deleteAfterDownload) === value;
+      radio.id = value === "true" ? "settings-delete-after" : "settings-keep-after"; radio.defaultChecked = String(s.deleteAfterDownload) === value;
       wrap.append(radio, node("span", label)); deletion.append(wrap);
     }
     content.append(deletion);
@@ -793,29 +1342,32 @@ function renderSettings() {
 }
 async function saveSettings() {
   const patch: Partial<Settings> & { token?: string } = {};
+  const field = (id: string) => $<HTMLInputElement>(`settings-${id}`);
+  const edited = (id: string) => isEditedSetting(field(id));
   if (settingsTab === "general") {
-    const token = ($("settings-token") as HTMLInputElement | null)?.value.trim();
+    const token = field("token")?.value.trim();
     if (token) patch.token = token;
   } else if (settingsTab === "downloads") {
-    if (state?.target?.mode !== "remote") patch.downloadDirectory = (
-      $("settings-directory") as HTMLInputElement
-    ).value;
-    patch.parallelDownloads = Number(
-      ($("settings-parallel") as HTMLInputElement).value,
-    );
-    patch.autoDownloadInterval = Number(
-      ($("settings-interval") as HTMLInputElement).value,
-    );
-    patch.deleteAfterDownload = ($("settings-delete-after") as HTMLInputElement).checked;
-    patch.deleteSourceFolders = ($<HTMLInputElement>("settings-delete-folders")).checked;
-    patch.speedLimitBytesPerSecond = Math.round(Number(($<HTMLInputElement>("settings-speed")).value) * 1024);
+    if (edited("directory")) patch.downloadDirectory = field("directory").value;
+    if (edited("stage-downloads")) patch.stageDownloads = field("stage-downloads").checked;
+    if (edited("staging-directory")) patch.stagingDirectory = field("staging-directory").value;
+    if (edited("staging-budget")) patch.stagingMaxBytes = Math.round(Number(field("staging-budget").value) * 1024 ** 3);
+    if (edited("staging-reserve")) patch.stagingMinimumFreeBytes = Math.round(Number(field("staging-reserve").value) * 1024 ** 3);
+    if (edited("parallel")) patch.parallelDownloads = Number(field("parallel").value);
+    if (edited("interval")) patch.autoDownloadInterval = Number(field("interval").value);
+    if (edited("delete-after")) patch.deleteAfterDownload = field("delete-after").checked;
+    if (edited("delete-folders")) patch.deleteSourceFolders = field("delete-folders").checked;
+    if (edited("speed")) patch.speedLimitBytesPerSecond = Math.round(Number(field("speed").value) * 1024);
   } else {
-    patch.showToolTips = ($("settings-tooltips") as HTMLInputElement).checked;
-    if (!($<HTMLInputElement>("settings-autostart")).disabled) patch.autoStartApplication = ($<HTMLInputElement>("settings-autostart")).checked;
+    if (edited("tooltips")) patch.showToolTips = field("tooltips").checked;
+    if (edited("autostart")) patch.autoStartApplication = field("autostart").checked;
   }
   await run(async () => {
-    state = await api.saveSettings(patch);
-    desktopIntegration = await api.getDesktopIntegration();
+    const generation = engineGeneration;
+    const next = await api.saveSettings(patch);
+    if (generation !== engineGeneration) return;
+    state = next;
+    if (patch.autoStartApplication !== undefined) desktopIntegration = await api.getDesktopIntegration();
     render();
   }, "Settings saved.");
 }
@@ -831,7 +1383,7 @@ function ask(
       container = $("dialog-fields");
     $("dialog-title").textContent = titleText;
     $("dialog-submit").textContent = submitLabel;
-    $("dialog-error").textContent = "";
+    setCopyableMessage($("dialog-error"), "");
     container.replaceChildren();
     for (const f of fields) {
       let input: HTMLInputElement | HTMLSelectElement;
@@ -860,7 +1412,7 @@ function ask(
         const jobCap = speed === "" ? cap : Number(speed) * 1024;
         const source = speed === "" ? "inherited from global" : "explicit override";
         const folderEffect = !deletes ? "folder cleanup skipped because source files are kept" : folders ? "folder cleanup enabled after successful source-file deletion, including excluded files" : "folder cleanup off";
-        preview.textContent = `Effective: ${deletes ? "delete" : "keep"} source after successful download; ${folderEffect}; job limit ${speedText(jobCap)} (${source}); engine-wide aggregate limit ${speedText(cap)}. The job limit is saved when queued; the engine-wide limit also applies.`;
+        setCopyableMessage(preview, `Effective: ${deletes ? "delete" : "keep"} source after successful download; ${folderEffect}; job limit ${speedText(jobCap)} (${source}); engine-wide aggregate limit ${speedText(cap)}. The job limit is saved when queued; the engine-wide limit also applies.`);
       };
       $<HTMLSelectElement>("dialog-deletion").addEventListener("change", updatePreview);
       $<HTMLSelectElement>("dialog-folders").addEventListener("change", updatePreview);
@@ -890,13 +1442,13 @@ function ask(
             ? String(input.checked)
             : input.value.trim();
         if (f.required && !values[f.name]) {
-          $("dialog-error").textContent = `${f.label} is required.`;
+          setCopyableMessage($("dialog-error"), `${f.label} is required.`);
           input.focus();
           return;
         }
       }
       try { if (validate) await validate(values); finish(values); }
-      catch (error) { $("dialog-error").textContent = error instanceof Error ? error.message : String(error); }
+      catch (error) { setCopyableMessage($("dialog-error"), error instanceof Error ? error.message : String(error)); }
     };
     dialog.showModal();
   });
@@ -1038,16 +1590,68 @@ async function removeRule() {
       render();
     }, "Rule removed.");
 }
+api.onMagnetDestination(id => {
+  const dialog = $<HTMLDialogElement>("magnet-destination");
+  const folders = $("magnet-folders"), status = $("magnet-status");
+  const save = $<HTMLButtonElement>("magnet-save");
+  const path = [{ id: "0", name: "put.io files" }];
+  let open = true;
+
+  async function browse() {
+    const folder = path[path.length - 1];
+    $("magnet-path").textContent = path.map(entry => entry.name).join(" / ");
+    folders.replaceChildren();
+    save.disabled = true;
+    setCopyableMessage(status, "Loading folders…");
+    try {
+      const entries = await api.listMagnetFolders(id, folder.id);
+      if (!open) return;
+      if (path.length > 1) folders.append(button("Up one folder", "magnet-up", () => { path.pop(); void browse(); }));
+      for (const entry of entries) {
+        folders.append(button(entry.name, "magnet-folder-" + entry.id, () => { path.push(entry); void browse(); }));
+      }
+      setCopyableMessage(status, entries.length ? "" : "No subfolders here.");
+      save.disabled = false;
+    } catch {
+      if (!open) return;
+      setCopyableMessage(status, "Could not load folders. Check your put.io connection.");
+      folders.append(button("Retry", "magnet-retry", () => void browse()));
+      if (path.length > 1) folders.append(button("Up one folder", "magnet-up", () => { path.pop(); void browse(); }));
+    }
+  }
+
+  function finish(folder: string | null) {
+    open = false;
+    dialog.close();
+    void api.finishMagnetDestination(id, folder).catch(() => showNotice("Could not confirm the magnet destination.", true));
+  }
+  $("magnet-cancel").onclick = () => finish(null);
+  dialog.oncancel = event => { event.preventDefault(); finish(null); };
+  save.onclick = () => finish(path[path.length - 1].id);
+  dialog.showModal();
+  void browse();
+});
+
 api.onState((next) => {
   const previous = state;
   state = next;
   renderTarget();
   const targetChanged = JSON.stringify(previous?.target) !== JSON.stringify(next.target);
   const tokenChanged = previous?.hasToken !== next.hasToken;
+  const movesChanged = previous?.fileMovesSupported !== next.fileMovesSupported;
   const jobsChanged = JSON.stringify(previous?.jobs) !== JSON.stringify(next.jobs) || previous?.paused !== next.paused;
-  const rulesChanged = JSON.stringify(previous?.rules) !== JSON.stringify(next.rules) || previous?.scanStatus !== next.scanStatus;
-  if (targetChanged || tokenChanged || (current === "downloads" && jobsChanged) || (current === "rules" && rulesChanged)) {
-    if (current === "settings") renderToolbar();
+  const rulesChanged = JSON.stringify(previous?.rules) !== JSON.stringify(next.rules) || previous?.scanStatus !== next.scanStatus || previous?.paused !== next.paused;
+  const settingsOpen = current === "settings" && !search && view.querySelector(".settings-layout");
+  if (settingsOpen && (settingsTab === "downloads" || settingsTab === "interface")) {
+    const settingsChanged = JSON.stringify(previous?.settings) !== JSON.stringify(next.settings) ||
+      JSON.stringify(previous?.roots) !== JSON.stringify(next.roots) || previous?.stagingNotice !== next.stagingNotice;
+    if (targetChanged) { render(); return; }
+    if (settingsChanged) { refreshSettings(); return; }
+  }
+  if ((targetChanged || tokenChanged) && search) clearSearch();
+  if (search && (jobsChanged || rulesChanged)) { render(); return; }
+  if (targetChanged || tokenChanged || (current === "files" && movesChanged) || (current === "downloads" && jobsChanged) || (current === "rules" && rulesChanged)) {
+    if (current === "settings" && !view.querySelector(".search-results") && view.querySelector(".settings-layout")) renderToolbar();
     else render();
   }
 });

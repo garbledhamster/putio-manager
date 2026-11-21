@@ -8,7 +8,7 @@ test('setup creates separate protected credentials and never overwrites existing
  if(process.platform!=='win32'){assert.equal(fs.statSync(path.dirname(config)).mode&0o077,0);assert.equal(fs.statSync(c.credentialKeyFile).mode&0o077,0)}
  assert.throws(()=>createSetup(config,root,5173)); assert.throws(()=>createSetup(path.join(base,'other','config.json'),root,0));
 });
-test('Windows setup protects credentials using the process identity despite a spoofed USERNAME', {skip:process.platform!=='win32'}, t=>{
+test('Windows setup removes explicit default grants and uses the process identity despite a spoofed USERNAME', {skip:process.platform!=='win32'}, t=>{
  const base=fs.mkdtempSync(path.join(os.tmpdir(),'putio-identity-'));
  t.after(()=>fs.rmSync(base,{recursive:true,force:true}));
  const previous=process.env.USERNAME;
@@ -17,6 +17,14 @@ test('Windows setup protects credentials using the process identity despite a sp
  process.env.USERNAME='*S-1-1-0';
  const root=path.join(base,'downloads'); fs.mkdirSync(root);
  const config=path.join(base,'private','config.json');
+ // Elevated Windows tokens can create new directories with these explicit grants.
+ // Reproduce the CI DACL before setup restricts it, even on a non-elevated host.
+ const mkdirSync=fs.mkdirSync;
+ t.mock.method(fs,'mkdirSync',(directory,...args)=>{
+  const result=mkdirSync(directory,...args);
+  if(path.resolve(directory)===path.dirname(config)) execFileSync('icacls.exe',[directory,'/grant','*S-1-5-18:(OI)(CI)F','*S-1-5-32-544:(OI)(CI)F'],{stdio:'ignore',windowsHide:true});
+  return result;
+ });
  createSetup(config,root,5173);
  const c=JSON.parse(fs.readFileSync(config,'utf8'));
  assert.match(fs.readFileSync(c.clientTokenFile,'utf8'),/^[A-Za-z0-9_-]{43}$/);

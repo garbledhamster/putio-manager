@@ -40,3 +40,27 @@ test('duplicate launch events submit once, while failed submissions can be retri
  queue.receive(['magnet:?failed']); await failedTwice.promise; await nextTurn();
  assert.deepEqual(seen,['magnet:?same','magnet:?failed','magnet:?failed']);
 });
+
+test('smoke integration uses isolated process-local startup and magnet settings',()=>{
+ const {smokeDesktopAdapter}=require('../dist/desktop/platform');
+ const a=smokeDesktopAdapter(true,true), fresh=smokeDesktopAdapter(true,true);
+ setStartup(a,true);setMagnet(a,true);
+ assert.equal(integrationStatus(a).startupEnabled,true);assert.equal(integrationStatus(a).magnetRegistered,true);
+ assert.equal(integrationStatus(fresh).startupEnabled,false);assert.equal(integrationStatus(fresh).magnetRegistered,false);
+ setStartup(a,false);setMagnet(a,false);assert.equal(integrationStatus(a).startupEnabled,false);assert.equal(integrationStatus(a).magnetRegistered,false);
+ const unsupported=smokeDesktopAdapter(false,false);assert.throws(()=>setStartup(unsupported,true));assert.throws(()=>setMagnet(unsupported,true));
+});
+test('smoke selection never calls OS startup or protocol getters and setters',()=>{
+ const fs=require('node:fs'),vm=require('node:vm'),platform=require('../dist/desktop/platform');
+ const code=fs.readFileSync('dist/desktop/main.js','utf8');
+ const start=code.indexOf('const startupSupported ='),end=code.indexOf('async function showMagnetMessage',start);
+ assert.ok(start>=0&&end>start);
+ let osCalls=0;const forbidden=()=>{osCalls++;throw Error('unexpected OS integration call')};
+ const app={isPackaged:true,getLoginItemSettings:forbidden,setLoginItemSettings:forbidden,isDefaultProtocolClient:forbidden,setAsDefaultProtocolClient:forbidden,removeAsDefaultProtocolClient:forbidden};
+ const context={smoke:true,process:{platform:'win32'},electron_1:{app},platform_1:platform};
+ vm.runInNewContext(code.slice(start,end)+'\nglobalThis.adapter=integration;',context);
+ assert.equal(platform.integrationStatus(context.adapter).startupEnabled,false);
+ platform.setStartup(context.adapter,true);platform.setMagnet(context.adapter,true);
+ const status=platform.integrationStatus(context.adapter);
+ assert.equal(status.startupEnabled,true);assert.equal(status.magnetRegistered,true);assert.equal(osCalls,0);
+});

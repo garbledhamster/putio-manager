@@ -275,21 +275,22 @@ async function folderCleanupFixture(t, options = {}) {
   if(options.nested) { entries.set('19',{id:19,parent_id:10,name:'outer',size:0,file_type:'FOLDER'}); entries.get('20').parent_id=19; }
   if(options.delayScan) entries.set('30',{id:30,parent_id:10,name:'other',size:0,file_type:'FOLDER'});
   if(options.second) entries.set('23',{id:23,parent_id:20,name:'second.mkv',size:400,file_type:'FILE'});
-  const deleted=[]; let afterDelete=false, releaseSecond, secondStarted, releaseScan, scanStarted, releaseCleanup, cleanupStarted; const cleanupReady=new Promise(r=>cleanupStarted=r); const secondReady=new Promise(r=>secondStarted=r); const scanReady=new Promise(r=>scanStarted=r);
+  const deleted=[], requests=[]; let afterDelete=false, releaseSecond, secondStarted, releaseScan, scanStarted, releaseCleanup, cleanupStarted, releaseDelete, deleteStarted; const deleteReady=new Promise(r=>deleteStarted=r); const cleanupReady=new Promise(r=>cleanupStarted=r); const secondReady=new Promise(r=>secondStarted=r); const scanReady=new Promise(r=>scanStarted=r);
   const transport=async (input, init={})=>{
     const url=new URL(input), p=url.pathname;
     if(p==='/account/info') return Response.json({status:'OK'});
     if(p==='/files/list') { const parent=url.searchParams.get('parent_id'); if(options.holdCleanup && afterDelete && parent==='20') { options.holdCleanup=false; cleanupStarted(); await new Promise(r=>releaseCleanup=r); } if(options.delayScan && parent==='30') { scanStarted(); await new Promise(r=>releaseScan=r); if(options.failScan) return new Response('',{status:500}); } if(options.failList && afterDelete && parent==='20') return new Response('',{status:500}); return Response.json({status:'OK',files:[...entries.values()].filter(f=>String(f.parent_id)===parent)}); }
-    if(p==='/files/delete') { const target=String(init.body.get('file_ids')); if((options.failFile && target==='21') || (options.failFolder && target==='20')) return new Response('',{status:500}); deleted.push(target); entries.delete(target); if(target==='21') afterDelete=true; return Response.json({status:'OK'}); }
+    if(p==='/files/delete') { const target=String(init.body.get('file_ids')); requests.push(target); if(options.holdFileDelete && target==='21'){deleteStarted(); await new Promise(r=>releaseDelete=r);} if(options.refuseFolder && target==='20') return new Response('',{status:403}); if((options.failFile && target==='21') || (options.failFolder && target==='20')) return new Response('',{status:500}); deleted.push(target); entries.delete(target); if(target==='21') afterDelete=true; if(options.dropFolder && target==='20') throw new TypeError('fixture response lost'); return Response.json({status:'OK'}); }
     const urlMatch=p.match(/^\/files\/(\d+)\/url$/); if(urlMatch) return Response.json({status:'OK',url:`http://fixture.test/bytes/${urlMatch[1]}`});
     const fileMatch=p.match(/^\/files\/(\d+)$/); if(fileMatch && entries.has(fileMatch[1])) return Response.json({status:'OK',file:entries.get(fileMatch[1])});
-    if(p.startsWith('/bytes/')) { if(p.endsWith('/23') && options.holdSecond) { secondStarted(); await new Promise(r=>releaseSecond=r); } if(options.failSecond && p.endsWith('/23')) return new Response('',{status:500}); return new Response('data'); }
+    if(p.startsWith('/bytes/')) { if(p.endsWith('/23') && options.holdSecond) { secondStarted(); await new Promise(r=>releaseSecond=r); } if(options.failSecond && p.endsWith('/23')) return new Response('',{status:500}); return new Response(p.endsWith('/22') ? 'x' : 'd'.repeat(400)); }
     return new Response('',{status:404});
   };
-  const engine=await createEngine({stateDirectory:path.join(dir,'state'),credentials,token:'fixture',apiBase:'http://fixture.test/',transport,roots:[{id:'root',label:'Root',path:root}]}); t.after(async()=>{ await engine.close(); await fs.rm(dir,{recursive:true,force:true}); });
+  const downloadRuntime=options.failSecond ? {now:Date.now,random:()=>0,delay:(_ms,signal)=>new Promise((resolve,reject)=>signal?.addEventListener('abort',()=>reject(new DOMException('Aborted','AbortError')),{once:true}))} : undefined;
+  const engine=await createEngine({stateDirectory:path.join(dir,'state'),credentials,token:'fixture',apiBase:'http://fixture.test/',transport,downloadRuntime,roots:[{id:'root',label:'Root',path:root}]}); t.after(async()=>{ await engine.close(); await fs.rm(dir,{recursive:true,force:true}); });
   await engine.execute('selectDownloadRoot',['root']); await engine.execute('saveSettings',[{deleteAfterDownload:true,deleteSourceFolders:true,parallelDownloads:2}]);
   const rule={folderId:'10',folderName:'watch',downloadDirectory:root,extensions:['mkv'],minSizeBytes:100,keepFolderStructure:false,...options.rule};
-  await engine.execute('addRule',[rule]); return {engine,entries,deleted,secondReady,scanReady,cleanupReady,release:()=>releaseSecond?.(),releaseScan:()=>releaseScan?.(),releaseCleanup:()=>releaseCleanup?.(),root,rule};
+  await engine.execute('addRule',[rule]); return {engine,entries,deleted,requests,secondReady,scanReady,cleanupReady,deleteReady,releaseDelete:()=>releaseDelete?.(),release:()=>releaseSecond?.(),releaseScan:()=>releaseScan?.(),releaseCleanup:()=>releaseCleanup?.(),root,rule};
 }
 test('automatic cleanup removes eligible source then its folder including excluded leftovers', async t=>{
  const f=await folderCleanupFixture(t); await f.engine.execute('checkRules'); await until(()=>f.deleted.includes('20'));
@@ -299,13 +300,13 @@ test('keep override, protected watched roots and remaining eligible failures pre
  for(const mode of ['keep','protected','failed']) await t.test(mode,async t=>{
   const f=await folderCleanupFixture(t, mode==='keep'?{rule:{deleteAfterDownload:false}}:mode==='failed'?{second:true,failSecond:true}:{});
   if(mode==='protected') await f.engine.execute('addRule',[{...f.rule,folderId:'20',folderName:'protected',extensions:['none']}]);
-  await f.engine.execute('checkRules'); await until(async()=>{const s=await f.engine.getSnapshot(); return s.jobs.length && s.jobs.every(j=>['completed','failed'].includes(j.status));}); await new Promise(r=>setTimeout(r,100));
+  await f.engine.execute('checkRules'); await until(async()=>{const s=await f.engine.getSnapshot(); return s.jobs.length && s.jobs.every(j=>['completed',...(mode==='failed'?['waiting']:['failed'])].includes(j.status));}); await new Promise(r=>setTimeout(r,100));
   assert.ok(!f.deleted.includes('20')); if(mode==='keep') assert.ok(!f.deleted.includes('21')); if(mode==='failed') assert.ok(f.entries.has('23'));
  });
 });
 test('folder cleanup waits for pending sibling and reports list and delete failures', async t=>{
  await t.test('pending',async t=>{ const f=await folderCleanupFixture(t,{second:true,holdSecond:true}); await f.engine.execute('checkRules'); await f.secondReady; await until(()=>f.deleted.includes('21')); await new Promise(r=>setTimeout(r,80)); assert.ok(!f.deleted.includes('20')); f.release(); await until(()=>f.deleted.includes('20')); });
- for(const mode of ['failList','failFolder','failFile']) await t.test(mode,async t=>{ const f=await folderCleanupFixture(t,{[mode]:true}); await f.engine.execute('checkRules'); await until(async()=>{const j=(await f.engine.getSnapshot()).jobs[0];return j?.status==='completed' && !!j.error;}); assert.ok(!f.deleted.includes('20')); });
+ for(const mode of ['failList','failFolder','failFile']) await t.test(mode,async t=>{ const f=await folderCleanupFixture(t,{[mode]:true}); await f.engine.execute('checkRules'); await until(async()=>{const j=(await f.engine.getSnapshot()).jobs[0];return j?.status==='completed' && !!j.cleanupWarning;}); const j=(await f.engine.getSnapshot()).jobs[0]; assert.equal(j.verification,'verified'); assert.equal(j.cleanupStatus,mode==='failList'?'failed':'unknown'); assert.equal(j.error,undefined); assert.equal(await fs.readFile(path.join(f.root,'feature.mkv'),'utf8'),'d'.repeat(400)); assert.ok(!f.deleted.includes('20')); });
 });
 test('manual cleanup requires no remaining files and respects explicit keep and watched roots', async t=>{
  for(const mode of ['nonempty','empty','keep','protected']) await t.test(mode,async t=>{
@@ -350,4 +351,63 @@ test('another completed job explicitly keeping its file or folder prevents cross
 test('successful sibling candidates coalesce across nested folder deletions',async t=>{
  const f=await folderCleanupFixture(t,{second:true,nested:true}); await f.engine.execute('checkRules'); await until(()=>f.deleted.includes('19')); await new Promise(r=>setTimeout(r,100));
  assert.equal(f.deleted.filter(id=>id==='20').length,1); assert.equal(f.deleted.filter(id=>id==='19').length,1); assert.ok((await f.engine.getSnapshot()).jobs.every(job=>job.status==='completed' && !job.error));
+});
+for(const mode of ['local','remote']) test(`${mode}: cancel during source cleanup prevents subsequent folder deletion`,async t=>{
+ const f=await folderCleanupFixture(t,{holdFileDelete:true});let client=f.engine,server;if(mode==='remote'){const {startRemoteServer}=require('../dist/server/server'),{RemoteEngine}=require('../dist/remote/client'),token='a'.repeat(43);server=await startRemoteServer(f.engine,{host:'127.0.0.1',port:0,clientToken:token});client=new RemoteEngine({url:`http://127.0.0.1:${server.address.port}`,token});}t.after(async()=>{f.releaseDelete();if(server){await client.close();await server.close()}});await client.execute('checkRules');await f.deleteReady;const id=(await client.getSnapshot()).jobs[0].id;await client.execute('cancelDownloads',[[id]]);f.releaseDelete();await until(async()=> (await client.getSnapshot()).jobs[0].status==='completed');await new Promise(r=>setTimeout(r,150));assert.deepEqual(f.deleted,['21']);
+});
+for(const mode of ['local','remote']) test(`${mode}: pause during source cleanup prevents subsequent folder deletion after resume`,async t=>{
+ const f=await folderCleanupFixture(t,{holdFileDelete:true,holdCleanup:true});let client=f.engine,server;if(mode==='remote'){const {startRemoteServer}=require('../dist/server/server'),{RemoteEngine}=require('../dist/remote/client'),token='a'.repeat(43);server=await startRemoteServer(f.engine,{host:'127.0.0.1',port:0,clientToken:token});client=new RemoteEngine({url:`http://127.0.0.1:${server.address.port}`,token});}t.after(async()=>{f.releaseDelete();f.releaseCleanup();if(server){await client.close();await server.close()}});await client.execute('checkRules');await f.deleteReady;const stopping=client.execute('pause');await new Promise(r=>setTimeout(r,80));f.releaseDelete();await stopping;await f.cleanupReady;await client.execute('resume');f.releaseCleanup();await new Promise(r=>setTimeout(r,150));assert.deepEqual(f.deleted,['21']);
+});
+
+
+for (const mode of ['local','remote']) for (const failure of ['failList','refuseFolder']) test(`${mode}: ${failure} reports folder cleanup separately`, async t=>{
+ const f=await folderCleanupFixture(t,{[failure]:true});let client=f.engine,server;
+ if(mode==='remote'){const {startRemoteServer}=require('../dist/server/server'),{RemoteEngine}=require('../dist/remote/client'),token='a'.repeat(43);server=await startRemoteServer(f.engine,{host:'127.0.0.1',port:0,clientToken:token});client=new RemoteEngine({url:`http://127.0.0.1:${server.address.port}`,token});}
+ t.after(async()=>{if(server){await client.close();await server.close()}});
+ await client.execute('checkRules'); await until(async()=>{const j=(await client.getSnapshot()).jobs[0];return j?.error || j?.cleanupStatus==='failed';});
+ const jobs=(await client.getSnapshot()).jobs; assert.equal(jobs.length,1); const job=jobs[0]; assert.equal(job.status,'completed'); assert.equal(job.verification,'verified'); assert.equal(job.cleanupStatus,'failed'); assert.ok(job.cleanupWarning); assert.equal(job.error,undefined);
+ assert.equal(await fs.readFile(path.join(f.root,'feature.mkv'),'utf8'),'d'.repeat(400)); assert.deepEqual(f.deleted,['21']); assert.ok(f.entries.has('20'));
+});
+for (const mode of ['local','remote']) test(`${mode}: pending folder cleanup is not reported as succeeded`, async t=>{
+ const f=await folderCleanupFixture(t,{holdCleanup:true});let client=f.engine,server;
+ if(mode==='remote'){const {startRemoteServer}=require('../dist/server/server'),{RemoteEngine}=require('../dist/remote/client'),token='a'.repeat(43);server=await startRemoteServer(f.engine,{host:'127.0.0.1',port:0,clientToken:token});client=new RemoteEngine({url:`http://127.0.0.1:${server.address.port}`,token});}
+ t.after(async()=>{f.releaseCleanup();if(server){await client.close();await server.close()}});
+ await client.execute('checkRules'); await f.cleanupReady; try { const job=(await client.getSnapshot()).jobs[0]; assert.equal(job.status,'completed'); assert.notEqual(job.cleanupStatus,'succeeded'); assert.deepEqual(f.deleted,['21']); } finally { f.releaseCleanup(); } await until(()=>f.deleted.includes('20'));
+});
+
+
+
+for(const mode of ['local','remote']) test(`${mode}: lost folder response records unknown without replay`,async t=>{
+ const f=await folderCleanupFixture(t,{dropFolder:true});let client=f.engine,server;
+ if(mode==='remote'){const {startRemoteServer}=require('../dist/server/server'),{RemoteEngine}=require('../dist/remote/client'),token='a'.repeat(43);server=await startRemoteServer(f.engine,{host:'127.0.0.1',port:0,clientToken:token});client=new RemoteEngine({url:`http://127.0.0.1:${server.address.port}`,token});}t.after(async()=>{if(server){await client.close();await server.close()}});
+ await client.execute('checkRules');await until(async()=> (await client.getSnapshot()).jobs[0]?.cleanupStatus==='unknown');const job=(await client.getSnapshot()).jobs[0];assert.equal(job.status,'completed');assert.equal(job.verification,'verified');assert.ok(job.cleanupWarning);assert.equal(job.error,undefined);assert.equal(await fs.readFile(path.join(f.root,'feature.mkv'),'utf8'),'d'.repeat(400));assert.deepEqual(f.requests,['21','20']);assert.deepEqual(f.deleted,['21','20']);await client.execute('checkRules');await new Promise(r=>setTimeout(r,100));assert.deepEqual(f.requests,['21','20']);assert.deepEqual(f.deleted,['21','20']);
+});
+for(const mode of ['local','remote']) for(const action of ['pause','cancelDownloads']) test(`${mode}: ${action} during folder marker save blocks folder deletion`,async t=>{
+ const f=await folderCleanupFixture(t);let client=f.engine,server,blocked=false,release;const gate=new Promise(r=>release=r);const rename=fs.rename;
+ if(mode==='remote'){const {startRemoteServer}=require('../dist/server/server'),{RemoteEngine}=require('../dist/remote/client'),token='a'.repeat(43);server=await startRemoteServer(f.engine,{host:'127.0.0.1',port:0,clientToken:token});client=new RemoteEngine({url:`http://127.0.0.1:${server.address.port}`,token});}
+ fs.rename=async(from,to)=>{if(!blocked&&String(to).endsWith('engine.json')){const state=JSON.parse(await fs.readFile(from,'utf8'));if(Object.values(state.recovery||{}).some(r=>r.cleanup?.step==='folder'&&r.cleanup?.phase==='in-flight')){blocked=true;await gate;}}return rename(from,to);};
+ t.after(async()=>{fs.rename=rename;release();if(server){await client.close();await server.close()}});
+ try {await client.execute('checkRules');await until(()=>blocked || f.requests.includes('20'));assert.equal(f.requests.includes('20'),false);assert.equal(blocked,true);const id=(await client.getSnapshot()).jobs[0].id;const stop=client.execute(action,action==='cancelDownloads'?[[id]]:[]);await new Promise(r=>setTimeout(r,30));release();await stop;await new Promise(r=>setTimeout(r,50));assert.deepEqual(f.requests,['21']);assert.deepEqual(f.deleted,['21']);assert.equal(await fs.readFile(path.join(f.root,'feature.mkv'),'utf8'),'d'.repeat(400));}finally{release();fs.rename=rename;}
+});
+
+
+for(const mode of ['local','remote']) for(const phase of ['in-flight','succeeded']) test(`${mode}: folder ${phase} save obstruction retains honest outcome`,async t=>{
+ const f=await folderCleanupFixture(t);let client=f.engine,server,failed=false;const rename=fs.rename;
+ if(mode==='remote'){const {startRemoteServer}=require('../dist/server/server'),{RemoteEngine}=require('../dist/remote/client'),token='a'.repeat(43);server=await startRemoteServer(f.engine,{host:'127.0.0.1',port:0,clientToken:token});client=new RemoteEngine({url:`http://127.0.0.1:${server.address.port}`,token});}
+ fs.rename=async(from,to)=>{if(!failed&&String(to).endsWith('engine.json')){const state=JSON.parse(await fs.readFile(from,'utf8'));if(Object.values(state.recovery||{}).some(r=>r.cleanup?.step==='folder'&&r.cleanup?.phase===phase)){failed=true;throw Object.assign(new Error('fixture failure'),{code:'EIO'});}}return rename(from,to);};
+ t.after(async()=>{fs.rename=rename;if(server){await client.close();await server.close()}});
+ await client.execute('checkRules');await until(async()=>{const j=(await client.getSnapshot()).jobs[0];return failed&&['failed','unknown'].includes(j?.cleanupStatus)});const job=(await client.getSnapshot()).jobs[0];assert.equal(job.status,'completed');assert.equal(job.verification,'verified');assert.equal(job.cleanupStatus,phase==='in-flight'?'failed':'unknown');assert.ok(job.cleanupWarning);assert.equal(job.error,undefined);assert.deepEqual(f.requests,phase==='in-flight'?['21']:['21','20']);assert.deepEqual(f.deleted,f.requests);assert.equal(await fs.readFile(path.join(f.root,'feature.mkv'),'utf8'),'d'.repeat(400));
+});
+
+for(const mode of ['local','remote']) test(`${mode}: live pending folder cleanup is visible to existing Cancel`,async t=>{
+ const f=await folderCleanupFixture(t,{holdCleanup:true});let client=f.engine,server;
+ if(mode==='remote'){const {startRemoteServer}=require('../dist/server/server'),{RemoteEngine}=require('../dist/remote/client'),token='a'.repeat(43);server=await startRemoteServer(f.engine,{host:'127.0.0.1',port:0,clientToken:token});client=new RemoteEngine({url:`http://127.0.0.1:${server.address.port}`,token});}
+ t.after(async()=>{f.releaseCleanup();if(server){await client.close();await server.close()}});
+ await client.execute('checkRules');await f.cleanupReady;try{const job=(await client.getSnapshot()).jobs[0];assert.equal(job.status,'completed');assert.equal(job.cleanupPending,true);assert.deepEqual(f.deleted,['21']);await client.execute('cancelDownloads',[[job.id]]);}finally{f.releaseCleanup();}await new Promise(r=>setTimeout(r,100));const job=(await client.getSnapshot()).jobs[0];assert.notEqual(job.cleanupPending,true);assert.equal(job.status,'completed');assert.deepEqual(f.deleted,['21']);assert.equal(await fs.readFile(path.join(f.root,'feature.mkv'),'utf8'),'d'.repeat(400));
+});
+
+for(const mode of ['local','remote']) test(`${mode}: protected retained folder does not advertise pending Cancel`,async t=>{
+ const f=await folderCleanupFixture(t);await f.engine.execute('addRule',[{...f.rule,folderId:'20',folderName:'protected',extensions:['none']}]);let client=f.engine,server;
+ if(mode==='remote'){const {startRemoteServer}=require('../dist/server/server'),{RemoteEngine}=require('../dist/remote/client'),token='a'.repeat(43);server=await startRemoteServer(f.engine,{host:'127.0.0.1',port:0,clientToken:token});client=new RemoteEngine({url:`http://127.0.0.1:${server.address.port}`,token});}t.after(async()=>{if(server){await client.close();await server.close()}});
+ await client.execute('checkRules');await until(async()=>{const j=(await client.getSnapshot()).jobs[0];return j?.status==='completed'&&!!j.cleanupWarning;});const job=(await client.getSnapshot()).jobs[0];assert.notEqual(job.cleanupPending,true);assert.equal(job.cleanupStatus,'not-started');assert.deepEqual(f.deleted,['21']);assert.ok(f.entries.has('20'));
 });

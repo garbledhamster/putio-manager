@@ -6,6 +6,15 @@ export interface DesktopAdapter {
   getMagnet(): boolean;
   setMagnet(enabled: boolean): boolean;
 }
+/** Smoke runs keep integration changes inside their own process. */
+export function smokeDesktopAdapter(startupSupported: boolean, magnetSupported: boolean): DesktopAdapter {
+  let startup = false, magnet = false;
+  return {
+    startupSupported, magnetSupported,
+    getStartup: () => startup, setStartup: enabled => { startup = enabled; },
+    getMagnet: () => magnet, setMagnet: enabled => { magnet = enabled; return true; },
+  };
+}
 export function integrationStatus(adapter: DesktopAdapter) {
   return { startupSupported: adapter.startupSupported, startupEnabled: adapter.startupSupported && adapter.getStartup(), magnetSupported: adapter.magnetSupported, magnetRegistered: adapter.magnetSupported && adapter.getMagnet() };
 }

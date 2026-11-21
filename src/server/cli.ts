@@ -4,10 +4,11 @@ import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 import path from "node:path";
 import { RemoteEngine } from "../remote/client";
 import { startRemoteServer } from "./server";
-import { createEngine } from "../engine/engine";
+import { createEngine, EngineStartupFailure, QuiescentEngineOwner } from "../engine/engine";
 import { CredentialAdapter } from "../core/settings";
 
-type Config = { host: string; port: number; stateDirectory: string; roots: {id:string;label:string;path:string}[]; clientTokenFile: string; credentialKeyFile: string; putioTokenFile?: string; label?: string };
+let failedStartupOwner: QuiescentEngineOwner | undefined;
+type Config = { host: string; port: number; stateDirectory: string; roots: {id:string;label:string;path:string}[]; clientTokenFile: string; credentialKeyFile: string; putioTokenFile?: string; label?: string; stagingDirectory?: string };
 function absolute(p: unknown): p is string { return typeof p === "string" && path.isAbsolute(p); }
 function regular(file: string, secret = false) {
   const st = lstatSync(file);
@@ -17,7 +18,7 @@ function readConfig(file: string): Config {
   if (!absolute(file)) throw new Error("Config path must be absolute.");
   regular(file);
   const c = JSON.parse(readFileSync(file, "utf8"));
-  if (!c || typeof c.host !== "string" || !Number.isInteger(c.port) || c.port < 1 || c.port > 65535 || !absolute(c.stateDirectory) || !absolute(c.clientTokenFile) || !absolute(c.credentialKeyFile) || (c.putioTokenFile !== undefined && !absolute(c.putioTokenFile)) || (c.label !== undefined && typeof c.label !== "string") || !Array.isArray(c.roots) || c.roots.length === 0 || c.roots.some((r: any) => !r || typeof r.id !== "string" || !r.id || typeof r.label !== "string" || !absolute(r.path))) throw new Error("Invalid server configuration.");
+  if (!c || typeof c.host !== "string" || !Number.isInteger(c.port) || c.port < 1 || c.port > 65535 || !absolute(c.stateDirectory) || !absolute(c.clientTokenFile) || !absolute(c.credentialKeyFile) || (c.putioTokenFile !== undefined && !absolute(c.putioTokenFile)) || (c.label !== undefined && typeof c.label !== "string") || (c.stagingDirectory !== undefined && !absolute(c.stagingDirectory)) || !Array.isArray(c.roots) || c.roots.length === 0 || c.roots.some((r: any) => !r || typeof r.id !== "string" || !r.id || typeof r.label !== "string" || !absolute(r.path))) throw new Error("Invalid server configuration.");
   return c;
 }
 function readSecret(file: string): string { regular(file, true); return readFileSync(file, "utf8").trim(); }
@@ -49,7 +50,9 @@ async function main() {
   if (!configFile || !["serve", "status", "pause", "resume", "auth"].includes(command || "")) throw new Error("Usage: server <setup|serve|status|pause|resume|auth> [--config absolute-path]");
   const c = readConfig(configFile); const clientToken = readSecret(c.clientTokenFile);
   if (command === "serve") {
-    const engine = await createEngine({ stateDirectory: c.stateDirectory, credentials: credentialAdapter(c.credentialKeyFile), label: c.label, roots: c.roots, token: c.putioTokenFile ? readSecret(c.putioTokenFile) : undefined });
+    let engine: Awaited<ReturnType<typeof createEngine>>;
+    try { engine = await createEngine({ stateDirectory: c.stateDirectory, credentials: credentialAdapter(c.credentialKeyFile), label: c.label, roots: c.roots, stagingDirectory: c.stagingDirectory, token: c.putioTokenFile ? readSecret(c.putioTokenFile) : undefined }); }
+    catch (error) { if (error instanceof EngineStartupFailure) { failedStartupOwner = error.owner; process.once("exit", () => { if (failedStartupOwner) process.exitCode = 1; }); } throw error; }
     let server: Awaited<ReturnType<typeof startRemoteServer>>;
     try { server = await startRemoteServer(engine, { host: c.host, port: c.port, clientToken }); } catch (error) { await engine.close(); throw error; }
     process.stdout.write("Server ready.\n");
@@ -69,4 +72,4 @@ async function main() {
     } finally { await client.close(); }
   }
 }
-void main().catch(() => { process.stderr.write(process.argv[2] === "setup" ? "Setup failed. Use a new private configuration directory, an existing absolute download directory and a valid port; check permissions.\n" : "Operation failed. Check configuration, credential permissions and server availability.\n"); process.exitCode = 1; });
+void main().catch(error => { if (error instanceof EngineStartupFailure) { process.stderr.write("Engine startup could not safely close a file; state ownership remains held until process exit.\n"); process.exitCode = 1; return; } process.stderr.write(process.argv[2] === "setup" ? "Setup failed. Use a new private configuration directory, an existing absolute download directory and a valid port; check permissions.\n" : "Operation failed. Check configuration, credential permissions and server availability.\n"); process.exitCode = 1; });
