@@ -229,7 +229,8 @@ export async function verifyRelease(mode, target, options = {}) {
       if (lowerAscii.includes(Buffer.from(term).toString('latin1').toLowerCase()) || lowerWide.includes(term.toLowerCase())) add(name, 'private-denylist-match');
       if (name.toLowerCase().includes(term.toLowerCase())) add(name, 'private-denylist-path');
     }
-    if (/(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{30,}|AKIA[A-Z0-9]{16})/.test(ascii)) add(name, 'credential-token-shape');
+    // Match whole credentials, not coincidental prefixes inside larger vendor data.
+    if (/(?<![A-Za-z0-9_])(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{30,}|AKIA[A-Z0-9]{16})(?![A-Za-z0-9_])/.test(ascii)) add(name, 'credential-token-shape');
     if (/-----BEGIN (?:RSA |OPENSSH |EC |DSA )?PRIVATE KEY-----[\r\n]+[A-Za-z0-9+/=\r\n]{80,}-----END/.test(ascii)) add(name, 'private-key-content');
     if (/\.asar$/i.test(name)) {
       for (const child of asarEntries(data, name)) await inspect(child);
