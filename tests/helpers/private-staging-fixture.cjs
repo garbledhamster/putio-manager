@@ -4,7 +4,8 @@ const { execFileSync } = require('node:child_process');
 // Restrict disposable test roots to the current Windows identity and SYSTEM.
 // POSIX fixtures already use mkdtemp's owner-only directory mode.
 async function privateTemp(prefix) {
-  const directory = await fs.mkdtemp(prefix);
+  // Fixtures and engines must name the same directory through TEMP and /var aliases.
+  const directory = await fs.realpath(await fs.mkdtemp(prefix));
   if (process.platform !== 'win32') return directory;
   const script = `
 $ErrorActionPreference = 'Stop'
