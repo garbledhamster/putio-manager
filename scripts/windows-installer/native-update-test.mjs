@@ -6,14 +6,21 @@ import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
-import { buildWindowsInstallers, getWindowsInstallerIdentity, runTool } from './build.mjs';
-import { auditWindowsInstallers } from './audit.mjs';
+import { buildWindowsInstallers, getWindowsInstallerIdentity, runTool, installerToolFailureStatus } from './build.mjs';
+import { auditWindowsInstallers, auditFailureStatus } from './audit.mjs';
 import { requireDisposableWindowsRunner } from './native-fixture.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
+const updateFixtureStages=new Set(['copy-actual-b','build-actual-a','build-actual-b','audit-actual-a','audit-actual-b','install-actual-a','inventory-actual-a','status-actual-a','controller-child','controller-evidence','helper-receipt','helper-relaunch','status-actual-b','inventory-actual-b','preservation','engine-preservation','uninstall-actual-b']);
+export function updateFixtureFailureStatus(stage,error) {
+  const audit=auditFailureStatus(error);
+  return {schema:1,updateFixtureStage:updateFixtureStages.has(stage)?stage:'initialization',code:'update-fixture-failed',...installerToolFailureStatus(error),...(audit.stage!=='initialization'?{audit}:{})};
+}
+export const WINDOWS_PRODUCT_INVENTORY_SCRIPT=String.raw`$ErrorActionPreference='Stop'; $name='Putio Manager'; $records=@(); foreach($root in @('HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall','HKCU:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall')) { if(Test-Path -LiteralPath $root) { $records+=@(Get-ChildItem -LiteralPath $root | ForEach-Object { Get-ItemProperty -LiteralPath $_.PSPath } | Where-Object { $_.DisplayName -eq $name } | ForEach-Object { [pscustomobject]@{ productCode=$_.PSChildName; version=$_.DisplayVersion; msi=$_.WindowsInstaller -eq 1 } }) } }; ConvertTo-Json -InputObject $records -Compress`;
 const pause = milliseconds => new Promise(resolve => setTimeout(resolve,milliseconds));
 const sameGuid = (a,b) => String(a).replace(/[{}]/g,'').toUpperCase() === String(b).replace(/[{}]/g,'').toUpperCase();
+let childStage='initialization';
 async function sha256(filename) {
   const hash = createHash('sha256');
   for await(const chunk of createReadStream(filename)) hash.update(chunk);
@@ -50,11 +57,14 @@ async function runUpdateChild(jobFile) {
     return new Response(Readable.toWeb(createReadStream(msi)),{status:200,headers:{'content-length':String(bytes),'content-type':'application/octet-stream'}});
   };
   const application=path.join(installed,'resources','app','dist');
+  childStage='load-real-modules';
   const {DesktopUpdater}=require(path.join(application,'desktop','app-updates.js'));
   const {createWindowsUpdateAdapter}=require(path.join(application,'desktop','windows-updates.js'));
   const {createEngine}=require(path.join(application,'engine','engine.js'));
   const credentials={available:()=>false,encrypt:()=>{throw new Error('Fixture credentials are unavailable.');},decrypt:()=>{throw new Error('Fixture credentials are unavailable.');}};
+  childStage='create-real-engine';
   let engine=await createEngine({stateDirectory:profile,credentials,roots:[{id:'generated',label:'Generated fixture media',path:media}],transport:async()=>{throw new Error('Generated engine must not contact an account.');}});
+  childStage='configure-real-engine';
   await engine.execute('selectDownloadRoot',['generated']);
   await engine.execute('saveSettings',[{parallelDownloads:3,deleteAfterDownload:false,deleteSourceFolders:false}]);
   await engine.execute('pause');
@@ -71,12 +81,15 @@ async function runUpdateChild(jobFile) {
     }};
   const updater=new DesktopUpdater({currentVersion:job.currentVersion,platform:'win32',arch:process.arch,adapter:createWindowsUpdateAdapter(context),releaseCheck:async()=>release,
     beforeInstall:async()=>{
+      childStage='close-real-engine';
       await engine.close(); engine=undefined; closed=true;
       if(!await missing(path.join(profile,'.engine-owner.lock'))) throw new Error('The generated engine still owns its state.');
       writeFileSync(evidenceFile,JSON.stringify({schema:1,engineClosed:true,quitRequested:false,targetVersion:job.targetVersion})+'\n');
     }});
   try {
+    childStage='check-real-controller';
     if((await updater.check()).phase!=='available') throw new Error('Native update fixture did not find B.');
+    childStage='install-real-controller';
     await updater.install();
     // Successful handoff exits through context.quitApplication above.
     throw new Error('Native update fixture returned without requesting application exit.');
@@ -108,8 +121,7 @@ async function appStatus(executable) {
   return response.value;
 }
 async function assertSingleProduct(identity) {
-  const statement="$ErrorActionPreference='Stop'; $name='Putio Manager'; $records=@(); foreach($root in @('HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall','HKCU:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall')) { if(Test-Path -LiteralPath $root) { $records+=@(Get-ChildItem -LiteralPath $root | ForEach-Object { Get-ItemProperty -LiteralPath $_.PSPath } | Where-Object { $_.DisplayName -eq $name } | ForEach-Object { [pscustomobject]@{ productCode=$_.PSChildName; version=$_.DisplayVersion; msi=$_.WindowsInstaller -eq 1 } }) } }; ConvertTo-Json -InputObject $records -Compress";
-  const result=await runTool(path.join(process.env.SystemRoot,'System32','WindowsPowerShell','v1.0','powershell.exe'),['-NoProfile','-NonInteractive','-Command',statement]);
+  const result=await runTool(path.join(process.env.SystemRoot,'System32','WindowsPowerShell','v1.0','powershell.exe'),['-NoProfile','-NonInteractive','-Command',WINDOWS_PRODUCT_INVENTORY_SCRIPT]);
   const records=JSON.parse(result.stdout.replace(/^\uFEFF/,''));
   if(!Array.isArray(records) || records.length!==1 || !records[0].msi || records[0].version!==identity.version || !sameGuid(records[0].productCode,identity.productCode)) throw new Error('The actual application has duplicate or unexpected installer ownership.');
 }
@@ -138,27 +150,30 @@ export async function runNativeWindowsUpdateTest() {
   const media=path.join(work,'generated-media');
   const sentinel='Generated native update preservation fixture.\n';
   let installedByFixture=false,handedOff=false,verified=false,child;
+  let stage='copy-actual-b';
   async function msi(args,allowExitCodes=[0]) { return await runTool(path.join(process.env.SystemRoot,'System32','msiexec.exe'),[...args,'/qn','/norestart','REBOOT=ReallySuppress'],{allowExitCodes}); }
   try {
     const appB=path.join(work,'application-b');
     await fs.cp(source,appB,{recursive:true,verbatimSymlinks:true});
     await fs.writeFile(path.join(appB,'resources/app/package.json'),JSON.stringify({...originalPackage,version:targetVersion},null,2)+'\n');
     const outputA=path.join(work,'installer-a'),outputB=path.join(work,'installer-b');
-    const builtA=await buildWindowsInstallers({version:currentVersion,arch,appDirectory:source,outputDirectory:outputA});
-    const builtB=await buildWindowsInstallers({version:targetVersion,arch,appDirectory:appB,outputDirectory:outputB});
+    stage='build-actual-a'; const builtA=await buildWindowsInstallers({version:currentVersion,arch,appDirectory:source,outputDirectory:outputA});
+    stage='build-actual-b'; const builtB=await buildWindowsInstallers({version:targetVersion,arch,appDirectory:appB,outputDirectory:outputB});
     for(const options of [{version:currentVersion,appDirectory:source,outputDirectory:outputA},{version:targetVersion,appDirectory:appB,outputDirectory:outputB}]) {
+      stage=options.version===currentVersion?'audit-actual-a':'audit-actual-b';
       const audit=await auditWindowsInstallers({...options,arch}); await audit.cleanup();
     }
-    await msi(['/i',builtA.msi]); installedByFixture=true;
-    await assertSingleProduct(a);
+    stage='install-actual-a'; await msi(['/i',builtA.msi]); installedByFixture=true;
+    stage='inventory-actual-a'; await assertSingleProduct(a);
     const executable=path.join(installed,'PutioManager.exe');
+    stage='status-actual-a';
     if((await appStatus(executable)).currentVersion!==currentVersion) throw new Error('The actual installed A executable reports the wrong version.');
     await fs.mkdir(profile,{recursive:true}); await fs.mkdir(media);
     await fs.writeFile(path.join(profile,'native-update-preservation.txt'),sentinel);
     await fs.writeFile(path.join(media,'generated-media.txt'),sentinel);
     const jobFile=path.join(work,'fixture-job.json');
     await fs.writeFile(jobFile,JSON.stringify({schema:1,currentVersion,targetVersion,arch,installed,profile,msi:builtB.msi,media})+'\n',{flag:'wx'});
-    child=spawn(process.execPath,[fileURLToPath(import.meta.url),'--fixture-child',jobFile],{windowsHide:true,stdio:['ignore','ignore','ignore'],shell:false});
+    stage='controller-child'; child=spawn(process.execPath,[fileURLToPath(import.meta.url),'--fixture-child',jobFile],{windowsHide:true,stdio:['ignore','ignore','inherit'],shell:false});
     const exit=await new Promise((resolve,reject)=>{
       const timeout=setTimeout(()=>{child.kill();reject(new Error('The actual update controller did not hand off in time.'));},120000);
       child.once('error',()=>{clearTimeout(timeout);reject(new Error('The actual update controller fixture could not start.'));});
@@ -166,11 +181,13 @@ export async function runNativeWindowsUpdateTest() {
     });
     if(exit!==0) throw new Error('The actual update controller fixture failed.');
     handedOff=true;
+    stage='controller-evidence';
     const evidence=JSON.parse(await fs.readFile(path.join(work,'controller-evidence.json'),'utf8'));
     if(evidence.engineClosed!==true || evidence.quitRequested!==true || evidence.targetVersion!==targetVersion) throw new Error('The native update handoff did not prove real engine closure.');
     const updateRoot=path.join(profile,'desktop-updates');
     let receipt,receiptDirectory;
     const deadline=Date.now()+180000;
+    stage='helper-receipt';
     while(Date.now()<deadline) {
       const directories=(await fs.readdir(updateRoot,{withFileTypes:true})).filter(entry=>entry.isDirectory()&&!entry.isSymbolicLink()&&/^windows-[a-zA-Z0-9]+$/.test(entry.name));
       if(directories.length!==1) throw new Error('The native update helper has an unexpected operation inventory.');
@@ -180,6 +197,7 @@ export async function runNativeWindowsUpdateTest() {
     }
     if(receipt?.schema!==1 || receipt.phase!=='updated' || receipt.verified!==true || receipt.version!==targetVersion) throw new Error('The real MSI helper did not confirm the update.');
     const launchDeadline=Date.now()+30000;
+    stage='helper-relaunch';
     let relaunched=false,helperExited=false;
     while(Date.now()<launchDeadline) {
       if((await readOwnedProcesses(installed)).length>0) relaunched=true;
@@ -188,23 +206,28 @@ export async function runNativeWindowsUpdateTest() {
       await pause(100);
     }
     if(!relaunched||!helperExited) throw new Error('The real helper did not finish and relaunch the installed application.');
-    if((await appStatus(executable)).currentVersion!==targetVersion) throw new Error('The actual installed B executable reports the wrong version.');
-    await assertSingleProduct(b);
+    stage='status-actual-b'; if((await appStatus(executable)).currentVersion!==targetVersion) throw new Error('The actual installed B executable reports the wrong version.');
+    stage='inventory-actual-b'; await assertSingleProduct(b);
+    stage='preservation';
     for(const filename of [path.join(profile,'native-update-preservation.txt'),path.join(media,'generated-media.txt')]) if(await fs.readFile(filename,'utf8')!==sentinel) throw new Error('The real update changed generated profile or media.');
     verified=true;
     // Stop only this fixture-owned installed executable and its subprocesses,
     // after the receipt and real B executable have both been verified.
     await stopOwnedApplication(installed);
     await pause(300);
+    stage='engine-preservation';
     const {createEngine}=require(path.join(installed,'resources/app/dist/engine/engine.js'));
     const credentials={available:()=>false,encrypt:()=>{throw Error('fixture');},decrypt:()=>{throw Error('fixture');}};
     const engine=await createEngine({stateDirectory:profile,credentials,transport:async()=>{throw Error('No fixture account traffic.');}});
     try { const snapshot=await engine.getSnapshot();if(!snapshot.paused||snapshot.settings.parallelDownloads!==3||snapshot.settings.deleteAfterDownload!==false||snapshot.settings.deleteSourceFolders!==false)throw new Error('The updated real engine did not preserve pause and deletion choices.'); }
     finally { await engine.close(); }
-    await msi(['/x',`{${b.productCode}}`]); installedByFixture=false;
+    stage='uninstall-actual-b'; await msi(['/x',`{${b.productCode}}`]); installedByFixture=false;
     if(!await missing(executable) || await fs.readFile(path.join(profile,'native-update-preservation.txt'),'utf8')!==sentinel || await fs.readFile(path.join(media,'generated-media.txt'),'utf8')!==sentinel) throw new Error('Real application uninstall did not preserve generated user data.');
     console.log('Verified the actual Windows desktop controller, engine shutdown, detached helper, native MSI upgrade, installed B status and preserved generated data.');
     return {ok:true,arch,currentVersion,targetVersion,checks:['real-installed-a','real-controller','real-engine-closure','verified-msi-transfer','detached-helper','real-msi-upgrade','real-installed-b','real-relaunch','one-msi-owner','preserved-profile-media-and-pause']};
+  } catch(error) {
+    console.error(JSON.stringify(updateFixtureFailureStatus(stage,error)));
+    throw error;
   } finally {
     if(child?.exitCode===null) child.kill();
     if(installedByFixture) {
@@ -227,7 +250,7 @@ export async function runNativeWindowsUpdateTest() {
 
 if(process.argv[1] && path.resolve(process.argv[1])===fileURLToPath(import.meta.url)) {
   if(process.argv[2]==='--fixture-child' && process.argv.length===4) {
-    await runUpdateChild(process.argv[3]).catch(()=>{console.error('The generated native update child failed.');process.exitCode=1;});
+    await runUpdateChild(process.argv[3]).catch(()=>{console.error(JSON.stringify({schema:1,childStage,code:'child-failed'}));process.exitCode=1;});
   } else if(process.argv.length===3 && process.argv[2]==='--disposable-ci') {
     await runNativeWindowsUpdateTest().catch(()=>{console.error('Actual Windows native updater verification failed. No private diagnostics were printed.');process.exitCode=1;});
   } else {console.error('Use --disposable-ci only on the disposable hosted repository runner.');process.exitCode=1;}

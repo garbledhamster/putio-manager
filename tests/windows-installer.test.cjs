@@ -161,6 +161,14 @@ test('native updater acceptance cannot execute on an operator machine', async ()
   assert.equal(result.status,0);
 });
 
+test('actual updater fixture preserves PowerShell registry separators and sanitizes failure stages', async () => {
+  const {WINDOWS_PRODUCT_INVENTORY_SCRIPT,updateFixtureFailureStatus}=await import('../scripts/windows-installer/native-update-test.mjs');
+  assert.ok(WINDOWS_PRODUCT_INVENTORY_SCRIPT.includes(String.raw`HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall`));
+  assert.ok(WINDOWS_PRODUCT_INVENTORY_SCRIPT.includes(String.raw`HKCU:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall`));
+  assert.deepEqual(updateFixtureFailureStatus('controller-child',Error('generated-private')),{schema:1,updateFixtureStage:'controller-child',code:'update-fixture-failed'});
+  assert.deepEqual(updateFixtureFailureStatus('generated-private',Error('generated-private')),{schema:1,updateFixtureStage:'initialization',code:'update-fixture-failed'});
+});
+
 test('audit failures expose only allowlisted stages, invariant codes and compiler/API codes', async () => {
   const {auditStage,auditFailureStatus,validateBootstrapperInspection}=await import('../scripts/windows-installer/audit.mjs');
   let failure;
