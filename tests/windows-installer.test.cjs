@@ -152,6 +152,19 @@ test('native updater acceptance cannot execute on an operator machine', async ()
   assert.equal(result.status,0);
 });
 
+test('audit failures expose only allowlisted stages, invariant codes and compiler/API codes', async () => {
+  const {auditStage,auditFailureStatus,validateBootstrapperInspection}=await import('../scripts/windows-installer/audit.mjs');
+  let failure;
+  try { await auditStage('bundle-metadata',()=>validateBootstrapperInspection({inspection:{manifest:[],application:[],extension:[]},identity:{},names:{}})); } catch(error) {failure=error;}
+  assert.deepEqual(auditFailureStatus(failure),{schema:1,stage:'bundle-metadata',code:'bundle-element-count'});
+  try { await auditStage('audit-helper-build',()=>{throw Error('An installer build or audit tool failed. CS1001 DTF_FILES_INVALID generated-private-build-location');}); } catch(error) {failure=error;}
+  const status=auditFailureStatus(failure);
+  assert.deepEqual(status,{schema:1,stage:'audit-helper-build',code:'tool-failed',toolCodes:['CS1001','DTF_FILES_INVALID']});
+  assert.ok(!JSON.stringify(status).includes('generated-private'));
+  assert.deepEqual(auditFailureStatus({auditStage:'generated-private-stage',auditCode:'generated-private-code'}),{schema:1,stage:'initialization',code:'audit-failed'});
+  await assert.rejects(auditStage('generated-private-stage',()=>{}),/Unknown installer audit stage/);
+});
+
 test('bootstrapper metadata has a fixed pinned resource inventory and the exact MSI servicing identity', async () => {
   const {getWindowsInstallerIdentity,installerAssetNames}=await moduleUnderTest();
   const {validateBootstrapperInspection,WIX_BOOTSTRAPPER_FILES}=await import('../scripts/windows-installer/audit.mjs');

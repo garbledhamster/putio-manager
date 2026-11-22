@@ -21,9 +21,10 @@ if (args.Length == 3 && args[0] == "--bootstrapper")
         File.WriteAllText(args[2],JsonSerializer.Serialize(new {manifest=ReadXml("manifest.xml"),application=ReadXml("BootstrapperApplicationData.xml"),extension=ReadXml("BootstrapperExtensionData.xml")}));
         return 0;
     }
-    catch { Console.Error.WriteLine("Read-only bootstrapper inspection failed."); return 1; }
+    catch { Console.Error.WriteLine("INSTALLER_AUDIT_CODE=DTF_BUNDLE_XML_INVALID"); return 1; }
 }
 if (args.Length != 2) return 2;
+var operation = "OPEN";
 try
 {
     var msi = Path.GetFullPath(args[0]);
@@ -33,12 +34,14 @@ try
     using var package = new InstallPackage(msi, DatabaseOpenMode.ReadOnly);
     package.WorkingDirectory = Path.Combine(output, "files");
     Directory.CreateDirectory(package.WorkingDirectory);
+    operation = "PROPERTIES";
     var properties = new Dictionary<string,string>();
     using (var view = package.OpenView("SELECT `Property`, `Value` FROM `Property`"))
     {
         view.Execute();
         while (view.Fetch() is Record record) using (record) properties.Add(record.GetString(1),record.GetString(2));
     }
+    operation = "DIRECTORIES";
     var directories = new Dictionary<string,(string parent,string name)>();
     using (var view = package.OpenView("SELECT `Directory`, `Directory_Parent`, `DefaultDir` FROM `Directory`"))
     {
@@ -60,6 +63,7 @@ try
         if (!full.StartsWith(Path.GetFullPath(root) + Path.DirectorySeparatorChar,StringComparison.OrdinalIgnoreCase)) throw new InvalidDataException();
         return full;
     }
+    operation = "COMPONENTS";
     var components = new Dictionary<string,(string directory,int attributes,string keyPath)>();
     using (var view = package.OpenView("SELECT `Component`, `Directory_`, `Attributes`, `KeyPath` FROM `Component`"))
     {
@@ -67,6 +71,7 @@ try
         while (view.Fetch() is Record record) using (record)
             components.Add(record.GetString(1),(record.GetString(2),record.GetInteger(3),record.GetString(4)));
     }
+    operation = "FILES";
     var files = new List<(string id,string relative,string source)>();
     long declaredBytes = 0;
     using (var view = package.OpenView("SELECT `File`, `Component_`, `FileName`, `Attributes`, `FileSize` FROM `File`"))
@@ -85,6 +90,7 @@ try
             files.Add((id,relative.Replace('\\','/'),source));
         }
     }
+    operation = "REGISTRY";
     var registry = new List<object>();
     var registryKeyPaths = new HashSet<string>();
     using (var view = package.OpenView("SELECT `Registry`, `Root`, `Key`, `Name`, `Component_`, `Value` FROM `Registry`"))
@@ -100,6 +106,7 @@ try
         }
     }
     if (registryKeyPaths.Count != components.Count) throw new InvalidDataException();
+    operation = "SHORTCUTS";
     var shortcuts = new List<object>();
     using (var view = package.OpenView("SELECT `Shortcut`, `Directory_`, `Target`, `Arguments`, `WkDir` FROM `Shortcut`"))
     {
@@ -107,6 +114,7 @@ try
         while (view.Fetch() is Record record) using (record)
             shortcuts.Add(new {id=record.GetString(1),directory=record.GetString(2),target=record.GetString(3),arguments=record.GetString(4),workingDirectory=record.GetString(5)});
     }
+    operation = "REMOVALS";
     var removals = new List<object>();
     using (var view = package.OpenView("SELECT `FileKey`, `FileName`, `DirProperty`, `InstallMode` FROM `RemoveFile`"))
     {
@@ -114,6 +122,7 @@ try
         while (view.Fetch() is Record record) using (record)
             removals.Add(new {id=record.GetString(1),filename=record.GetString(2),directory=record.GetString(3),mode=record.GetInteger(4)});
     }
+    operation = "CUSTOM_ACTIONS";
     var customActions = new List<object>();
     if (package.Tables.Contains("CustomAction"))
     using (var view = package.OpenView("SELECT `Action`, `Type`, `Source`, `Target` FROM `CustomAction`"))
@@ -122,6 +131,7 @@ try
         while (view.Fetch() is Record record) using (record)
             customActions.Add(new {id=record.GetString(1),type=record.GetInteger(2),source=record.GetString(3),target=record.GetString(4)});
     }
+    operation = "UPGRADE";
     var upgrade = new List<object>();
     using (var view = package.OpenView("SELECT `UpgradeCode`, `VersionMin`, `VersionMax`, `Attributes`, `ActionProperty` FROM `Upgrade`"))
     {
@@ -129,12 +139,14 @@ try
         while (view.Fetch() is Record record) using (record)
             upgrade.Add(new {code=record.GetString(1),minimum=record.GetString(2),maximum=record.GetString(3),attributes=record.GetInteger(4),property=record.GetString(5)});
     }
+    operation = "SEQUENCE";
     var actions = new Dictionary<string,int>();
     using (var view = package.OpenView("SELECT `Action`, `Sequence` FROM `InstallExecuteSequence`"))
     {
         view.Execute();
         while (view.Fetch() is Record record) using (record) actions.Add(record.GetString(1),record.GetInteger(2));
     }
+    operation = "SEARCH";
     var searches = new List<object>();
     using (var view = package.OpenView("SELECT `Signature_`, `Root`, `Key`, `Name`, `Type` FROM `RegLocator`"))
     {
@@ -148,12 +160,14 @@ try
         view.Execute();
         while (view.Fetch() is Record record) using (record) appSearch.Add(new {property=record.GetString(1),signature=record.GetString(2)});
     }
+    operation = "LAUNCH";
     var launchConditions = new List<object>();
     using (var view = package.OpenView("SELECT `Condition`, `Description` FROM `LaunchCondition`"))
     {
         view.Execute();
         while (view.Fetch() is Record record) using (record) launchConditions.Add(new {condition=record.GetString(1),description=record.GetString(2)});
     }
+    operation = "MEDIA";
     // Every included cabinet must be embedded; no arbitrary filesystem source reads.
     using (var view = package.OpenView("SELECT `Cabinet` FROM `Media`"))
     {
@@ -161,8 +175,10 @@ try
         while (view.Fetch() is Record record) using (record)
             if (!record.GetString(1).StartsWith('#')) throw new InvalidDataException();
     }
+    operation = "EXTRACT";
     package.ExtractFiles();
     var manifest = files.Select(file => new {path=file.relative,size=new FileInfo(file.source).Length,sha256=Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(file.source))).ToLowerInvariant(),source=file.source});
+    operation = "MANIFEST";
     var binaryCount = package.Tables.Contains("Binary") ? package.CountRows("Binary") : 0;
     var installationDirectory = directories["INSTALLFOLDER"];
     var programsDirectory = directories["ProgramsDirectory"];
@@ -171,4 +187,9 @@ try
     File.WriteAllText(Path.Combine(output,"inspection.json"),JsonSerializer.Serialize(evidence));
     return 0;
 }
-catch { Console.Error.WriteLine("Read-only MSI inspection failed."); return 1; }
+catch (Exception error)
+{
+    var code = error is InstallerException ? "MSI" : error is InvalidDataException ? "INVALID" : error is IOException ? "IO" : "UNEXPECTED";
+    Console.Error.WriteLine("INSTALLER_AUDIT_CODE=DTF_" + operation + "_" + code);
+    return 1;
+}

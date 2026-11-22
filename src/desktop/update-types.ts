@@ -23,6 +23,8 @@ export interface VerifiedUpdateAsset {
   url: string;
   bytes: number;
   sha256: string;
+  /** Signed manifest binding to Sparkle's raw archive signature (Mac only). */
+  ed25519?: string;
 }
 export interface VerifiedDesktopRelease {
   version: string;

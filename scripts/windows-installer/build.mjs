@@ -174,7 +174,7 @@ export async function runTool(command,args,{cwd,env,allowExitCodes=[0],timeoutMs
     child.once('close',code => {
       clearTimeout(timeout);
       if (!exceeded && allowExitCodes.includes(code)) { resolve({code,stdout}); return; }
-      const codes = [...new Set(`${stdout}\n${stderr}`.match(/\b(?:WIX\d{4}|CS\d{4}|NU\d{4}|NETSDK\d{4})\b/g) || [])].slice(0,12);
+      const codes = [...new Set(`${stdout}\n${stderr}`.match(/\b(?:WIX\d{4}|CS\d{4}|NU\d{4}|NETSDK\d{4}|DTF_(?:OPEN|PROPERTIES|DIRECTORIES|COMPONENTS|FILES|REGISTRY|SHORTCUTS|REMOVALS|CUSTOM_ACTIONS|UPGRADE|SEQUENCE|SEARCH|LAUNCH|MEDIA|EXTRACT|MANIFEST|BUNDLE_XML)_(?:MSI|INVALID|IO|UNEXPECTED))\b/g) || [])].slice(0,12);
       reject(new Error(`An installer build or audit tool failed.${codes.length ? ` Tool codes: ${codes.join(', ')}.` : ''}`));
     });
   });

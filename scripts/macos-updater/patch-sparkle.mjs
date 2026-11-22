@@ -11,7 +11,19 @@ export function patchUserDriver(source) {
   replace('#import <Sparkle/Sparkle.h>', `#import <Sparkle/Sparkle.h>
 #include <signal.h>
 static BOOL putioGateStarted = NO;
+static BOOL putioFailureEmitted = NO;
+uint64_t putioExpectedBytes(void) {
+    NSString *value = NSProcessInfo.processInfo.environment[@"PUTIO_UPDATER_EXPECTED_BYTES"];
+    if (value.length == 0 || [value rangeOfCharacterFromSet:NSCharacterSet.decimalDigitCharacterSet.invertedSet].location != NSNotFound) return 0;
+    unsigned long long bytes = 0;
+    NSScanner *scanner = [NSScanner scannerWithString:value];
+    return [scanner scanUnsignedLongLong:&bytes] && scanner.isAtEnd && bytes > 0 && bytes <= 2147483648ULL ? bytes : 0;
+}
 void putioEmit(NSDictionary *event) {
+    if ([event[@"phase"] isEqual:@"failed"]) {
+        if (putioFailureEmitted) return;
+        putioFailureEmitted = YES;
+    } else if (putioFailureEmitted) return;
     NSMutableDictionary *value = [event mutableCopy];
     value[@"schema"] = @1;
     NSData *data = [NSJSONSerialization dataWithJSONObject:value options:0 error:NULL];
@@ -34,8 +46,26 @@ static void putioInstallGate(void (^reply)(SPUUserUpdateChoice)) {
 }`);
   replace('- (void)showUpdateWithAppcastItem:(SUAppcastItem *)appcastItem updateAdjective:(NSString *)updateAdjective\n{', '- (void)showUpdateWithAppcastItem:(SUAppcastItem *)appcastItem updateAdjective:(NSString *)updateAdjective\n{\n    putioEmit(@{@"phase": @"available", @"version": appcastItem.versionString});');
   replace('                } else {\n                    reply(SPUUserUpdateChoiceInstall);\n                }\n                break;', '                } else {\n                    putioInstallGate(reply);\n                }\n                break;');
-  replace('- (void)showDownloadInitiatedWithCancellation:(void (^)(void))__unused cancellation\n{', '- (void)showDownloadInitiatedWithCancellation:(void (^)(void))__unused cancellation\n{\n    putioEmit(@{@"phase": @"downloading"});');
-  replace('    _bytesDownloaded += length;', '    _bytesDownloaded += length;\n    if (_bytesToDownload > 0) putioEmit(@{@"phase": @"downloading", @"percent": @(MIN(100.0, (double)_bytesDownloaded * 100.0 / (double)_bytesToDownload))});');
+  replace('    uint64_t _bytesDownloaded;', '    void (^_putioCancelDownload)(void);\n    uint64_t _bytesDownloaded;');
+  replace('- (void)showDownloadInitiatedWithCancellation:(void (^)(void))__unused cancellation\n{', '- (void)showDownloadInitiatedWithCancellation:(void (^)(void))__unused cancellation\n{\n    _putioCancelDownload = [cancellation copy];\n    _bytesDownloaded = 0;\n    putioEmit(@{@"phase": @"downloading"});');
+  replace('- (void)showDownloadDidReceiveExpectedContentLength:(uint64_t)expectedContentLength\n{', `- (void)showDownloadDidReceiveExpectedContentLength:(uint64_t)expectedContentLength
+{
+    if (putioExpectedBytes() == 0 || expectedContentLength > putioExpectedBytes()) {
+        putioEmit(@{@"phase": @"failed", @"code": @"download-invalid"});
+        if (_putioCancelDownload) _putioCancelDownload();
+        return;
+    }`);
+  // Expected length can be reported repeatedly for one download; never reset
+  // cumulative bytes in that callback (SPUUserDriver's documented contract).
+  replace('    _bytesDownloaded = 0;\n    _bytesToDownload = expectedContentLength;', '    _bytesToDownload = expectedContentLength;');
+  replace('    _bytesDownloaded += length;', `    uint64_t limit = putioExpectedBytes();
+    if (limit == 0 || _bytesDownloaded > limit || length > limit - _bytesDownloaded) {
+        putioEmit(@{@"phase": @"failed", @"code": @"download-invalid"});
+        if (_putioCancelDownload) _putioCancelDownload();
+        return;
+    }
+    _bytesDownloaded += length;
+    putioEmit(@{@"phase": @"downloading", @"percent": @(MIN(100.0, (double)_bytesDownloaded * 100.0 / (double)limit))});`);
   replace('- (void)showDownloadDidStartExtractingUpdate\n{', '- (void)showDownloadDidStartExtractingUpdate\n{\n    putioEmit(@{@"phase": @"verifying"});');
   replace('        installUpdateHandler(SPUUserUpdateChoiceInstall);', '        putioInstallGate(installUpdateHandler);');
   replace('- (void)showUpdateInstalledAndRelaunched:(BOOL)__unused relaunched acknowledgement:(void (^)(void))acknowledgement\n{', '- (void)showUpdateInstalledAndRelaunched:(BOOL)__unused relaunched acknowledgement:(void (^)(void))acknowledgement\n{\n    putioEmit(@{@"phase": @"finished", @"relaunched": @(relaunched)});');
@@ -44,19 +74,37 @@ static void putioInstallGate(void (^reply)(SPUUserUpdateChoice)) {
 export function patchCommandDriver(source) {
   const before = '    _updater.userAgentString = userAgentString;';
   if (!source.includes(before)) throw new Error('Pinned Sparkle setup did not match.');
-  source = source.replace('#import "SPUCommandLineDriver.h"', '#import "SPUCommandLineDriver.h"\nextern void putioEmit(NSDictionary *event);');
+  source = source.replace('#import <Sparkle/Sparkle.h>', `#import <Sparkle/Sparkle.h>
+extern void putioEmit(NSDictionary *event);
+extern uint64_t putioExpectedBytes(void);
+// Public item properties preserve the enclosure attributes used by Sparkle's verifier.
+static BOOL putioMatchesDescriptor(SUAppcastItem *item) {
+    NSDictionary *env = NSProcessInfo.processInfo.environment;
+    id enclosure = item.propertiesDictionary[@"enclosure"];
+    id signature = [enclosure isKindOfClass:NSDictionary.class] ? enclosure[@"sparkle:edSignature"] : nil;
+    NSString *expected = env[@"PUTIO_UPDATER_EXPECTED_SIGNATURE"];
+    NSData *decoded = expected ? [[NSData alloc] initWithBase64EncodedString:expected options:0] : nil;
+    return decoded.length == 64 && [[decoded base64EncodedStringWithOptions:0] isEqualToString:expected]
+        && [signature isKindOfClass:NSString.class] && [signature isEqualToString:expected]
+        && putioExpectedBytes() > 0 && item.contentLength == putioExpectedBytes()
+        && [item.versionString isEqualToString:env[@"PUTIO_UPDATER_EXPECTED_VERSION"]]
+        && [item.fileURL.absoluteString isEqualToString:env[@"PUTIO_UPDATER_EXPECTED_URL"]];
+}`);
   source = source.replace(before, `${before}\n            _updater.sendsSystemProfile = NO;`);
   const check = '    // We can always probe for update information';
   if (!source.includes(check)) throw new Error('Pinned Sparkle selection did not match.');
-  source = source.replace(check, `    NSString *expected = NSProcessInfo.processInfo.environment[@"PUTIO_UPDATER_EXPECTED_VERSION"];
-    if (expected != nil && ![expected isEqualToString:updateItem.versionString]) {
+  source = source.replace(check, `    if (!putioMatchesDescriptor(updateItem)) {
+        putioEmit(@{@"phase": @"failed", @"code": @"release-invalid"});
         if (error) *error = [NSError errorWithDomain:SPARKLE_CLI_ERROR_DOMAIN code:CLIErrorCodeCannotPerformCheck userInfo:nil];
         return NO;
     }
 ${check}`);
   source = source.replace('- (void)startUpdater SPU_OBJC_DIRECT', `- (void)updater:(SPUUpdater *)updater willDownloadUpdate:(SUAppcastItem *)item withRequest:(NSMutableURLRequest *)request {
     NSString *expected = NSProcessInfo.processInfo.environment[@"PUTIO_UPDATER_EXPECTED_URL"];
-    if (expected != nil && ![request.URL.absoluteString isEqualToString:expected]) exit(EXIT_FAILURE);
+    if (!putioMatchesDescriptor(item) || ![request.URL.absoluteString isEqualToString:expected]) {
+        putioEmit(@{@"phase": @"failed", @"code": @"release-invalid"});
+        exit(EXIT_FAILURE);
+    }
 }
 - (void)startUpdater SPU_OBJC_DIRECT`);
   const completion = '    if (error == nil) {\n        if (_verbose) {';

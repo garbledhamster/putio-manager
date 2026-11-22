@@ -8,13 +8,17 @@ Sparkle and its bundled components retain their upstream license notices. The
 native build copies Sparkle's complete LICENSE to LICENSE-Sparkle.txt beside the
 runtime helper and records its source pin. Source changes are reproducible in
 patch-sparkle.mjs: helper identity, HTTPS transport, no system profiling,
-allowlisted progress, exact expected version/URL and an asynchronous install gate.
+allowlisted progress, exact signed descriptor matching and an asynchronous install gate.
 Sparkle's verification, extraction, authorization and replacement code is intact.
 
 Runtime Mac payload authentication uses Sparkle's Ed25519 archive signature before
-extraction, plus the exact version and URL selected from the authenticated release.
-The publication audit binds that signature to the archive hash and byte count in
-the signed release metadata. Linux rehashes downloaded AppImage bytes against the
+extraction. The authenticated release descriptor carries that same raw archive
+signature, version, URL and byte count. Public SUAppcastItem properties are checked
+before proceeding and again in willDownloadUpdate (including any selected delta).
+Public user-driver download callbacks cancel declared or received bytes above the
+signed limit; the native signature verifier still authenticates the payload.
+The publication audit verifies both archive signatures and the exact manifest
+binding. Linux rehashes downloaded AppImage bytes against the
 authenticated SHA-256 and uses same-filesystem atomic replacement.
 
 Native fixtures use independent ephemeral Ed25519 keys and generated profiles.

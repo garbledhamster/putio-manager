@@ -75,10 +75,14 @@ function json(bytes: Buffer): Record<string, unknown> { try { return object(JSON
 function safeName(value: unknown): value is string {
   return typeof value === "string" && value.length <= 180 && /^[a-zA-Z0-9][a-zA-Z0-9._-]+$/.test(value) && !value.includes("..");
 }
+export function validArchiveSignature(value: unknown): value is string {
+  return typeof value === "string" && /^[A-Za-z0-9+/]{86}==$/.test(value) && Buffer.from(value, "base64").length === 64 && Buffer.from(value, "base64").toString("base64") === value;
+}
 function descriptor(value: unknown, version: string): VerifiedUpdateAsset {
   const item = object(value);
   if (!safeName(item.name) || !Number.isSafeInteger(item.bytes) || Number(item.bytes) <= 0 || Number(item.bytes) > maxAssetBytes || typeof item.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(item.sha256)) return fail();
-  return { name: item.name, bytes: Number(item.bytes), sha256: item.sha256, url: `https://github.com/${UPDATE_REPOSITORY}/releases/download/v${version}/${item.name}` };
+  if (item.ed25519 !== undefined && !validArchiveSignature(item.ed25519)) return fail();
+  return { name: item.name, bytes: Number(item.bytes), sha256: item.sha256, ...(item.ed25519 === undefined ? {} : { ed25519: item.ed25519 as string }), url: `https://github.com/${UPDATE_REPOSITORY}/releases/download/v${version}/${item.name}` };
 }
 function apiAsset(value: unknown, version: string): VerifiedUpdateAsset {
   const item = object(value);
@@ -123,6 +127,6 @@ export async function checkDesktopRelease(options: ReleaseProviderOptions, signa
     if (!actual || actual.bytes !== item.bytes || actual.sha256 !== item.sha256) return fail();
   }
   const selected = verified.find(asset => asset.name === updateAssetName(version, platform, options.arch));
-  if (!selected) return fail();
+  if (!selected || (platform === "macos" && !validArchiveSignature(selected.ed25519))) return fail();
   return { version, platform, arch: options.arch as "x64" | "arm64", asset: selected, assets: verified };
 }

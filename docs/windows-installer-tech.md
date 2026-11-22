@@ -21,6 +21,8 @@ Call `stageWindowsUpdateRuntime(appDirectory)` before packaged application smoke
 
 The successful audit returns temporary `payloadDirectory`, `bootstrapperDirectory` and `containerDirectory` paths for additional checks, plus hashes and controlled identity fields. Always call the returned `cleanup()` after inspection. Do not publish temporary inspection JSON: it contains private build paths needed only inside the audit.
 
+Failures report a fixed stage and invariant code, plus bounded compiler or DTF operation codes when applicable. They never print extracted metadata, paths, exception messages or compiler output. For example, `audit-helper-build` with a `CS` code identifies a compiler failure; `msi-read` with `DTF_FILES_INVALID` identifies a read-only file-table invariant; `msi-metadata` with `msi-owner-values` identifies the ownership contract. These diagnostics preserve the same fail-closed checks and permit correction from native CI evidence.
+
 ## Installed identity
 
 The normal installation directory is `%LOCALAPPDATA%/Programs/PutioManager`. Each CPU architecture has a separate fixed upgrade family; each version has its own deterministic product identity. Before a new installation changes files or removes an earlier version, MSI searches the opposite architecture's fixed 64-bit HKCU `InstallLocation` value and refuses installation if it is present. Both EXE and standalone MSI use that same guard. To switch CPU editions, uninstall the existing edition first; settings and downloaded media remain. Existing-product repair and uninstall remain available even if a conflicting marker is found. Cross-architecture coinstallation and automatic architecture replacement are not supported.

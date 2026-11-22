@@ -5,6 +5,7 @@ import path from "node:path";
 import { downloadUpdateAsset, privateUpdateDirectory, verifyUpdateFile } from "./update-transfer";
 import { updateErrorCode } from "./update-errors";
 import type { UpdateFetch } from "./update-release";
+import { validArchiveSignature } from "./update-release";
 import type { DesktopUpdateAdapter, DesktopUpdateProgress, NativeUpdateContext, PreparedDesktopUpdate, VerifiedDesktopRelease } from "./update-types";
 
 interface NativeDependencies {
@@ -63,6 +64,7 @@ export function createNativeUpdateAdapter(context: NativeUpdateContext, dependen
     const expected = `PutioManager-${release.version}-${platform}-${context.arch}${mac ? "-update.zip" : ".AppImage"}`;
     const url = `https://github.com/garbledhamster/putio-manager/releases/download/v${release.version}/${expected}`;
     if (!versionPattern.test(release.version) || !versionPattern.test(context.currentVersion) || !versionIsNewer(release.version, context.currentVersion) || release.platform !== platform || release.arch !== context.arch || release.asset.name !== expected || release.asset.url !== url || !Number.isSafeInteger(release.asset.bytes) || release.asset.bytes <= 0 || !/^[a-f0-9]{64}$/.test(release.asset.sha256)) throw failure("release-invalid");
+    if (release.asset.bytes > 2 * 1024 ** 3 || (mac && !validArchiveSignature(release.asset.ed25519))) throw failure("release-invalid");
   }
   return {
     supported,
@@ -122,7 +124,7 @@ export function createNativeUpdateAdapter(context: NativeUpdateContext, dependen
             const feed = `https://github.com/garbledhamster/putio-manager/releases/download/v${release.version}/appcast-${context.arch}.xml`;
             try { child = (dependencies.spawn ?? spawn)(helperPath, [context.applicationDirectory, "--check-immediately", "--user-agent-name", "PutioManager", "--feed-url", feed], {
               shell: false, detached: true, stdio: ["pipe", "pipe", "pipe"],
-              env: { ...environment, PUTIO_UPDATER_EXPECTED_VERSION: release.version, PUTIO_UPDATER_EXPECTED_URL: release.asset.url, PUTIO_UPDATER_RECEIPT: path.join(receiptDirectory!, "receipt.json") },
+              env: { ...environment, PUTIO_UPDATER_EXPECTED_VERSION: release.version, PUTIO_UPDATER_EXPECTED_URL: release.asset.url, PUTIO_UPDATER_EXPECTED_SIGNATURE: release.asset.ed25519!, PUTIO_UPDATER_EXPECTED_BYTES: String(release.asset.bytes), PUTIO_UPDATER_RECEIPT: path.join(receiptDirectory!, "receipt.json") },
             }); } catch { clearTimeout(timeout); terminalError = "installer-failed"; reject(failure("installer-failed")); return; }
             running = child;
             cancelOperation = abort; signal.addEventListener("abort", abort, { once: true });
@@ -150,11 +152,11 @@ export function createNativeUpdateAdapter(context: NativeUpdateContext, dependen
                 try { event = JSON.parse(line); } catch { finish(failure("release-invalid")); return; }
                 if (!event || event.schema !== 1) { finish(failure("release-invalid")); return; }
                 if (handedOff) {
-                  if (event.phase === "failed") handoffError = ["signature-invalid", "network", "permission-required", "installer-cancelled"].includes(String(event.code)) ? String(event.code) : "installer-failed";
+                  if (event.phase === "failed") handoffError = ["release-invalid", "download-invalid", "signature-invalid", "network", "permission-required", "installer-cancelled"].includes(String(event.code)) ? String(event.code) : "installer-failed";
                   continue;
                 }
                 if (event.phase === "available") { if (event.version !== release.version) { finish(failure("release-invalid")); return; } available = true; }
-                else if (event.phase === "failed") { finish(failure(["signature-invalid", "network", "permission-required", "installer-cancelled"].includes(String(event.code)) ? String(event.code) : "installer-failed")); return; }
+                else if (event.phase === "failed") { finish(failure(["release-invalid", "download-invalid", "signature-invalid", "network", "permission-required", "installer-cancelled"].includes(String(event.code)) ? String(event.code) : "installer-failed")); return; }
                 else if (event.phase === "ready") { if (!available) { finish(failure("release-invalid")); return; } ready = true; finish(); }
                 else if (["downloading", "verifying"].includes(String(event.phase))) {
                   const value: DesktopUpdateProgress = { phase: event.phase as "downloading" | "verifying" };

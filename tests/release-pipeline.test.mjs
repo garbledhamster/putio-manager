@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { generateKeyPairSync, verify } from 'node:crypto';
+import { generateKeyPairSync, sign, verify } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { mkdtemp, mkdir, symlink, writeFile, readFile, rm } from 'node:fs/promises';
@@ -72,6 +72,7 @@ test('publication signs canonical exact metadata and both raw Mac archives', asy
     const raw = await readFile(path.join(directory, `PutioManager-${version}-macos-${arch}-update.zip`));
     const archiveSignature = /sparkle:edSignature="([A-Za-z0-9+/=]+)"/.exec(appcast)?.[1];
     assert.ok(archiveSignature);
+    assert.equal(manifest.assets.find(asset => asset.name === `PutioManager-${version}-macos-${arch}-update.zip`).ed25519, archiveSignature);
     assert.ok(verify(null, raw, publicKey, Buffer.from(archiveSignature, 'base64')));
     assert.match(appcast, /<sparkle:minimumSystemVersion>13\.0<\/sparkle:minimumSystemVersion>/);
     assert.match(appcast, /github\.com\/garbledhamster\/putio-manager\/releases\/download\/v2\.2\.0/);
@@ -87,6 +88,25 @@ test('canonical signed metadata rejects duplicate names and noncanonical paths',
   const asset = { name: 'fixture.zip', bytes: 1, sha256: 'a'.repeat(64) };
   assert.throws(() => signing.canonicalUpdateMetadata(version, [asset, asset]), /inventory/i);
   for (const altered of [{ name: '../fixture.zip' }, { name: '/fixture.zip' }, { name: 'fixture.zip?token=fixture' }, { bytes: 0 }, { bytes: 1.5 }, { sha256: 'invalid' }]) assert.throws(() => signing.canonicalUpdateMetadata(version, [{ ...asset, ...altered }]), /inventory/i);
+});
+test('signed Mac archive bindings are required, canonical and exclusive to Mac archives', () => {
+  const asset = { name: `PutioManager-${version}-macos-x64-update.zip`, bytes: 1, sha256: 'a'.repeat(64) };
+  for (const ed25519 of [undefined, '', 'invalid', Buffer.alloc(63).toString('base64'), Buffer.alloc(64).toString('base64').replace(/==$/, 'B=')]) assert.throws(() => signing.canonicalUpdateMetadata(version, [{ ...asset, ed25519 }]), /binding/i);
+  const ed25519 = Buffer.alloc(64).toString('base64');
+  assert.equal(JSON.parse(signing.canonicalUpdateMetadata(version, [{ ...asset, ed25519 }])).assets[0].ed25519, ed25519);
+  assert.throws(() => signing.canonicalUpdateMetadata(version, [{ ...asset, name: 'fixture.zip', ed25519 }]), /binding/i);
+});
+test('publication verification rejects swapped architecture signatures even in a newly signed manifest', async t => {
+  const directory = await fixture(t), pair = generateKeyPairSync('ed25519');
+  const result = await signing.signUpdates(directory, version, pair.privateKey, pair.publicKey);
+  const manifestFile = path.join(directory, result.manifest), manifest = JSON.parse(await readFile(manifestFile));
+  const mac = manifest.assets.filter(asset => asset.name.endsWith('-update.zip'));
+  assert.equal(mac.length, 2); assert.notEqual(mac[0].ed25519, mac[1].ed25519);
+  [mac[0].ed25519, mac[1].ed25519] = [mac[1].ed25519, mac[0].ed25519];
+  const changed = signing.canonicalUpdateMetadata(version, manifest.assets);
+  await writeFile(manifestFile, changed);
+  await writeFile(path.join(directory, result.signature), sign(null, changed, pair.privateKey).toString('base64') + '\n');
+  await assert.rejects(signing.verifySignedUpdates(directory, version, pair.publicKey), /inventory/i);
 });
 test('signing refuses a different public key or an existing publication file', async t => {
   const directory = await fixture(t);

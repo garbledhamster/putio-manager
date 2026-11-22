@@ -16,4 +16,6 @@ Test changes with generated fixtures. Automated renderer fixtures may validate d
 
 Use this repository's GitHub Issues for public code work. Keep operator plans, private installation evidence and machine configuration outside the public tree. The [product context](docs/PRODUCT.md) records the existing interface and privacy requirements.
 
+Set an explicit project identity and a noreply email for automated commit authors and committers. Check all new reachable commit metadata before publishing. Avoid file-writing tools that silently select an account's personal email.
+
 Plan the requested batch, implement the complete ticket set, test the assembled system and fix failures until the acceptance checks pass. Preserve unrelated work. Installer and updater tests must run on generated profiles in disposable native runners; do not execute test installers against a live personal installation.

@@ -7,11 +7,11 @@ import { stageMacUpdater } from './package.mjs';
 import { prepareFixtureApplication, waitForFixtureResult } from './native-fixture.mjs';
 
 function run(command, args, options = {}) { const result = spawnSync(command, args, { stdio: 'pipe', ...options }); if (result.status !== 0 || result.error) throw new Error('Native Mac fixture command failed.'); return result.stdout; }
-function helperCycle(app, feed, { cancelReady = false } = {}) {
+function helperCycle(app, feed, { cancelReady = false, descriptor } = {}) {
   const executable = path.join(app, 'Contents', 'Resources', 'updater', 'sparkle.app', 'Contents', 'MacOS', 'sparkle');
   return new Promise((resolve, reject) => {
-    const child = spawn(executable, [app, '--check-immediately', '--user-agent-name', 'PutioManagerFixture', '--feed-url', feed], { stdio: ['pipe', 'pipe', 'ignore'] });
-    let buffer = '', last;
+    const child = spawn(executable, [app, '--check-immediately', '--user-agent-name', 'PutioManagerFixture', '--feed-url', feed], { stdio: ['pipe', 'pipe', 'ignore'], env: { ...process.env, PUTIO_UPDATER_EXPECTED_VERSION: descriptor.version, PUTIO_UPDATER_EXPECTED_URL: descriptor.url, PUTIO_UPDATER_EXPECTED_SIGNATURE: descriptor.ed25519, PUTIO_UPDATER_EXPECTED_BYTES: String(descriptor.bytes) } });
+    let buffer = '', last; const failureCodes = [];
     const timer = setTimeout(() => { child.kill(); reject(new Error('Native helper fixture timed out.')); }, 180000);
     child.on('error', () => { clearTimeout(timer); reject(new Error('Native helper fixture failed to start.')); });
     child.stdout.on('data', data => {
@@ -21,10 +21,11 @@ function helperCycle(app, feed, { cancelReady = false } = {}) {
       while ((end = buffer.indexOf('\n')) !== -1) {
         const line = buffer.slice(0, end); buffer = buffer.slice(end + 1);
         try { last = JSON.parse(line); } catch { child.kill(); return; }
+        if (last.phase === 'failed') failureCodes.push(last.code);
         if (last.phase === 'ready') child.stdin.end(cancelReady ? 'cancel\n' : 'unexpected\n');
       }
     });
-    child.on('exit', code => { clearTimeout(timer); resolve({ code, last }); });
+    child.on('exit', code => { clearTimeout(timer); resolve({ code, last, failureCodes }); });
   });
 }
 export async function testMacUpgrade() {
@@ -36,7 +37,8 @@ export async function testMacUpgrade() {
   const keys = generateKeyPairSync('ed25519'), jwk = keys.publicKey.export({ format: 'jwk' });
   const publicKey = Buffer.from(jwk.x, 'base64url').toString('base64');
   const payloads = new Map();
-  const server = createServer((request, response) => { const value = payloads.get(request.url); if (!value) { response.writeHead(404); response.end(); return; } response.writeHead(200, { 'content-length': value.length }); response.end(value); });
+  let archiveRequests = 0;
+  const server = createServer((request, response) => { const value = payloads.get(request.url); if (!value) { response.writeHead(404); response.end(); return; } if (request.url.endsWith('.zip')) archiveRequests++; response.writeHead(200, { 'content-length': value.length }); response.end(value); });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const base = `http://127.0.0.1:${server.address().port}/`;
   const resultFile = path.join(root, 'result.json'), configFile = path.join(root, 'configuration.json');
@@ -60,21 +62,35 @@ export async function testMacUpgrade() {
     await rm(seedFile);
     const name = path.basename(archive), archiveURL = base + name;
     payloads.set('/' + name, bytes);
-    const appcast = signatureValue => Buffer.from(`<?xml version="1.0"?><rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle"><channel><title>Generated fixture</title><item><sparkle:version>2.0.1</sparkle:version><sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion><enclosure url="${archiveURL}" length="${bytes.length}" type="application/octet-stream" sparkle:edSignature="${signatureValue}"/></item></channel></rss>`);
-    payloads.set('/appcast.xml', appcast(Buffer.alloc(64).toString('base64')));
-    const corrupt = await helperCycle(before, base + 'appcast.xml');
-    if (corrupt.code === 0 || corrupt.last?.code !== 'signature-invalid') throw new Error('Native Sparkle accepted an invalid archive signature.');
+    const descriptor = { version: '2.0.1', url: archiveURL, bytes: bytes.length, ed25519: signature.toString('base64') };
+    const appcast = (signatureValue, length = bytes.length) => Buffer.from(`<?xml version="1.0"?><rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle"><channel><title>Generated fixture</title><item><sparkle:version>2.0.1</sparkle:version><sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion><enclosure url="${archiveURL}" length="${length}" type="application/octet-stream" sparkle:edSignature="${signatureValue}"/></item></channel></rss>`);
+    // Another archive signed by the same project key cannot replace this descriptor.
+    const replayBytes = Buffer.from(bytes); replayBytes[0] ^= 1;
+    const replaySignature = sign(null, replayBytes, keys.privateKey).toString('base64');
+    for (const feed of [appcast(replaySignature), appcast(descriptor.ed25519, bytes.length + 1)]) {
+      payloads.set('/appcast.xml', feed); const requestsBefore = archiveRequests;
+      const rejected = await helperCycle(before, base + 'appcast.xml', { descriptor });
+      if (!rejected.failureCodes.includes('release-invalid') || archiveRequests !== requestsBefore) throw new Error('Native descriptor binding accepted a replay or downloaded a mismatched archive.');
+    }
+    const invalidSignature = Buffer.alloc(64).toString('base64');
+    payloads.set('/appcast.xml', appcast(invalidSignature));
+    const corrupt = await helperCycle(before, base + 'appcast.xml', { descriptor: { ...descriptor, ed25519: invalidSignature } });
+    if (corrupt.code === 0 || !corrupt.failureCodes.includes('signature-invalid')) throw new Error('Native Sparkle accepted an invalid archive signature.');
     payloads.set('/appcast.xml', appcast(signature.toString('base64')));
-    const cancelled = await helperCycle(before, base + 'appcast.xml', { cancelReady: true });
+    payloads.set('/' + name, Buffer.concat([bytes, Buffer.from([0])]));
+    const oversized = await helperCycle(before, base + 'appcast.xml', { descriptor });
+    if (!oversized.failureCodes.includes('download-invalid')) throw new Error('Native helper did not cancel an oversized archive response.');
+    payloads.set('/' + name, bytes);
+    const cancelled = await helperCycle(before, base + 'appcast.xml', { cancelReady: true, descriptor });
     if (cancelled.last?.phase === 'finished') throw new Error('Native Sparkle installed a cancelled update.');
     if (run('/usr/bin/plutil', ['-extract', 'CFBundleVersion', 'raw', path.join(before, 'Contents', 'Info.plist')]).toString().trim() !== '2.0.0') throw new Error('Native cancellation changed the application.');
     const ownerDirectory = path.dirname(before);
     try {
       await chmod(ownerDirectory, 0o555);
-      const denied = await helperCycle(before, base + 'appcast.xml');
+      const denied = await helperCycle(before, base + 'appcast.xml', { descriptor });
       if (![3, 8].includes(denied.code)) throw new Error('Noninteractive native update did not stop for authorization.');
     } finally { await chmod(ownerDirectory, 0o755); }
-    const asset = { name, bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex'), url: `https://github.com/garbledhamster/putio-manager/releases/download/v2.0.1/${name}` };
+    const asset = { name, bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex'), ed25519: descriptor.ed25519, url: `https://github.com/garbledhamster/putio-manager/releases/download/v2.0.1/${name}` };
     await writeFile(configFile, JSON.stringify({ profile, result: resultFile, nextVersion: '2.0.1', feed: base + 'appcast.xml', archiveURL, release: { version: '2.0.1', platform: 'macos', arch: process.arch, asset, assets: [asset] } }));
     const child = spawn(path.join(before, 'Contents', 'MacOS', 'PutioManager'), ['--enable-sandbox'], { stdio: 'ignore', env: { ...process.env, PUTIO_NATIVE_FIXTURE_CONFIG: configFile } });
     try { await waitForFixtureResult(resultFile); } finally { child.kill(); }

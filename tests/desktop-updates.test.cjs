@@ -13,6 +13,7 @@ function feed({platform='windows',arch='x64',version='2.3.0',mutateManifest,wron
   const pair=crypto.generateKeyPairSync('ed25519');
   const name=updateAssetName(version,platform,arch),payload=Buffer.from('generated fixture update');
   const item={name,bytes:payload.length,sha256:digest(payload)};
+  if(platform==='macos')item.ed25519=crypto.sign(null,payload,pair.privateKey).toString('base64');
   const manifest={schema:1,version,assets:[item]};
   mutateManifest?.(manifest);
   const bytes=Buffer.from(JSON.stringify(manifest)+'\n');
@@ -38,6 +39,7 @@ for(const platform of ['windows','macos','linux'])for(const arch of ['x64','arm6
   const fixture=feed({platform,arch});
   const result=await checkDesktopRelease(fixture.opts,controller().signal);
   assert.equal(result.asset.name,fixture.item.name);assert.equal(result.asset.sha256,fixture.item.sha256);
+  assert.equal(result.asset.ed25519,fixture.item.ed25519);
   assert.ok(!JSON.stringify(result).includes('CANARY_PRIVATE_TEXT'));
   assert.ok(fixture.calls.every(call=>call.options.credentials==='omit'&&call.options.redirect==='manual'&&!('Authorization'in call.options.headers)));
  });
@@ -65,6 +67,10 @@ test('missing and corrupt signatures cannot fall back to unsigned updates',async
 test('signed manifest cannot mismatch its version, size, checksum, architecture or safe filename',async()=>{
  const mutations=[m=>m.version='2.4.0',m=>m.assets[0].bytes++,m=>m.assets[0].sha256='a'.repeat(64),m=>m.assets[0].name='PutioManager-2.3.0-windows-arm64-setup.msi',m=>m.assets[0].name='../CANARY_PRIVATE_TEXT'];
  for(const mutateManifest of mutations){const f=feed({mutateManifest});await assert.rejects(checkDesktopRelease(f.opts,controller().signal))}
+});
+test('Mac requires a canonical 64-byte archive signature in the authenticated descriptor',async()=>{
+ const mutations=[m=>delete m.assets[0].ed25519,m=>m.assets[0].ed25519='invalid',m=>m.assets[0].ed25519=Buffer.alloc(63).toString('base64'),m=>m.assets[0].ed25519=Buffer.alloc(64).toString('base64').replace(/==$/,'B=')];
+ for(const mutateManifest of mutations){const f=feed({platform:'macos',mutateManifest});await assert.rejects(checkDesktopRelease(f.opts,controller().signal),error=>error.updateCode==='release-invalid')}
 });
 test('draft, prerelease, duplicate, foreign-host, missing-digest and oversize API assets are rejected',async()=>{
  const mutations=[f=>f.release.draft=true,f=>f.release.prerelease=true,f=>f.release.assets.push({...f.release.assets[0]}),f=>f.release.assets[0].browser_download_url='https://untrusted.example/installer.msi',f=>delete f.release.assets[0].digest,f=>f.release.assets[0].size=3*1024**3];

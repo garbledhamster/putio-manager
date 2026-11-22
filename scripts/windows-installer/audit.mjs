@@ -8,28 +8,49 @@ import { WIX_VERSION, installerAssetNames, getWindowsInstallerIdentity, createPa
 const here = path.dirname(fileURLToPath(import.meta.url));
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
 const normalizeGuid = value => String(value).replace(/[{}]/g,'').toUpperCase();
+const auditStages = new Set(['application-manifest','toolchain','bundle-extraction','bundle-inventory','bundle-architecture','embedded-msi','audit-helper-build','bundle-xml-read','bundle-metadata','bundle-privacy','msi-read','msi-metadata','payload-reconstruction','payload-comparison','payload-privacy']);
+const validationCodes = new Set(['bundle-schema','bundle-element-count','bundle-engine-version','bundle-registration','bundle-chain','bundle-msi-identity','bundle-ux-inventory','bundle-ui-identity','bundle-ui-package','bundle-extra-behavior','bundle-extension-data','msi-identity','msi-architecture','msi-upgrade-order','msi-guard-order','msi-guard-search','msi-guard-property','msi-guard-condition','msi-upgrade-family','msi-binary','msi-custom-actions','msi-registry','msi-owner-values','msi-directory','msi-shortcut','msi-removal','msi-files']);
+class AuditValidationError extends Error {
+  constructor(code) { super('Installer audit validation failed.'); this.auditCode=validationCodes.has(code)?code:'validation-failed'; }
+}
+class AuditStageError extends Error {
+  constructor(stage,cause) {
+    super('Installer audit stage failed.');
+    this.auditStage=stage;
+    this.auditCode=cause instanceof AuditValidationError?cause.auditCode:['ENOENT','EEXIST','EACCES','EPERM'].includes(cause?.code)?'file-unavailable':/An installer build or audit tool failed|A required installer build or audit tool could not start/.test(cause?.message||'')?'tool-failed':'validation-failed';
+    this.toolCodes=[...new Set(String(cause?.message||'').match(/\b(?:WIX\d{4}|CS\d{4}|NU\d{4}|NETSDK\d{4}|DTF_(?:OPEN|PROPERTIES|DIRECTORIES|COMPONENTS|FILES|REGISTRY|SHORTCUTS|REMOVALS|CUSTOM_ACTIONS|UPGRADE|SEQUENCE|SEARCH|LAUNCH|MEDIA|EXTRACT|MANIFEST|BUNDLE_XML)_(?:MSI|INVALID|IO|UNEXPECTED))\b/g)||[])].slice(0,12);
+  }
+}
+export async function auditStage(stage,operation) {
+  if(!auditStages.has(stage)) throw new Error('Unknown installer audit stage.');
+  try { return await operation(); } catch(error) { throw new AuditStageError(stage,error); }
+}
+export function auditFailureStatus(error) {
+  return error instanceof AuditStageError ? {schema:1,stage:error.auditStage,code:error.auditCode,...(error.toolCodes.length?{toolCodes:error.toolCodes}:{})} : {schema:1,stage:'initialization',code:'audit-failed'};
+}
+const invalid = code => { throw new AuditValidationError(code); };
 // Derived from the pinned v6.0.2 hyperlinkLicense stock payload group, bas_platform,
 // BurnCommon data file constants and the unconditional generated Burn manifests.
 export const WIX_BOOTSTRAPPER_FILES = Object.freeze(['BootstrapperApplicationData.xml','BootstrapperExtensionData.xml','logo.png','manifest.xml','thm.wxl','thm.xml','wixstdba.exe']);
 export function validateBootstrapperInspection({inspection,identity,names}) {
-  if (!Array.isArray(inspection.manifest) || !Array.isArray(inspection.application) || !Array.isArray(inspection.extension)) throw new Error('The generated bootstrapper manifests are invalid.');
+  if (!Array.isArray(inspection.manifest) || !Array.isArray(inspection.application) || !Array.isArray(inspection.extension)) invalid('bundle-schema');
   const manifest = inspection.manifest;
-  const one = (elements,name) => { const found=elements.filter(element=>element.name===name); if(found.length!==1) throw new Error('Unexpected generated bootstrapper manifest element.'); return found[0].attributes; };
-  if (one(manifest,'BurnManifest').EngineVersion?.split('.').slice(0,3).join('.') !== WIX_VERSION) throw new Error('The bootstrapper engine version differs from its pin.');
+  const one = (elements,name) => { const found=elements.filter(element=>element.name===name); if(found.length!==1) invalid('bundle-element-count'); return found[0].attributes; };
+  if (one(manifest,'BurnManifest').EngineVersion?.split('.').slice(0,3).join('.') !== WIX_VERSION) invalid('bundle-engine-version');
   const registration=one(manifest,'Registration');
-  if(registration.Version!==identity.version || registration.PerMachine!=='no' || registration.ExecutableName!==names.exe) throw new Error('Bootstrapper registration differs from its expected identity.');
+  if(registration.Version!==identity.version || registration.PerMachine!=='no' || registration.ExecutableName!==names.exe) invalid('bundle-registration');
   const packages=manifest.filter(element=>element.parent==='Chain' && /Package$/.test(element.name));
-  if(packages.length!==1 || packages[0].name!=='MsiPackage') throw new Error('Unexpected package in the bootstrapper chain.');
+  if(packages.length!==1 || packages[0].name!=='MsiPackage') invalid('bundle-chain');
   const msi=packages[0].attributes;
-  if(msi.Id!=='ApplicationMsi' || msi.Permanent!=='yes' || msi.PerMachine!=='no' || msi.Version!==identity.version || normalizeGuid(msi.ProductCode)!==identity.productCode || normalizeGuid(msi.UpgradeCode)!==identity.upgradeCode) throw new Error('The bootstrapper MSI servicing identity differs.');
+  if(msi.Id!=='ApplicationMsi' || msi.Permanent!=='yes' || msi.PerMachine!=='no' || msi.Version!==identity.version || normalizeGuid(msi.ProductCode)!==identity.productCode || normalizeGuid(msi.UpgradeCode)!==identity.upgradeCode) invalid('bundle-msi-identity');
   const payloads=manifest.filter(element=>element.name==='Payload' && element.parent==='UX').map(element=>element.attributes.FilePath).sort();
-  if(JSON.stringify(payloads)!==JSON.stringify(WIX_BOOTSTRAPPER_FILES.filter(name=>name!=='manifest.xml').sort())) throw new Error('Unexpected bootstrapper UX resource.');
+  if(JSON.stringify(payloads)!==JSON.stringify(WIX_BOOTSTRAPPER_FILES.filter(name=>name!=='manifest.xml').sort())) invalid('bundle-ux-inventory');
   const data=one(inspection.application,'WixBundleProperties');
-  if(data.DisplayName!==identity.productName || data.PerMachine!=='no' || normalizeGuid(data.UpgradeCode)!==identity.bundleUpgradeCode) throw new Error('The bootstrapper UI identity differs.');
+  if(data.DisplayName!==identity.productName || data.PerMachine!=='no' || normalizeGuid(data.UpgradeCode)!==identity.bundleUpgradeCode) invalid('bundle-ui-identity');
   const appPackage=one(inspection.application,'WixPackageProperties');
-  if(appPackage.Package!=='ApplicationMsi' || appPackage.Permanent!=='yes' || appPackage.Version!==identity.version || normalizeGuid(appPackage.ProductCode)!==identity.productCode) throw new Error('The bootstrapper UI package differs.');
-  if(manifest.some(element=>['ExePackage','BundlePackage','MspPackage','BootstrapperExtension','ApprovedExeForElevation','Update'].includes(element.name) || element.attributes.DownloadUrl || element.name==='MsiProperty' && element.attributes.Id==='ARPSYSTEMCOMPONENT' && element.attributes.Value==='1')) throw new Error('The bootstrapper adds an unexpected executable, download or hidden MSI.');
-  if(inspection.extension.length!==1 || inspection.extension[0].name!=='BootstrapperExtensionData') throw new Error('Unexpected bootstrapper extension metadata.');
+  if(appPackage.Package!=='ApplicationMsi' || appPackage.Permanent!=='yes' || appPackage.Version!==identity.version || normalizeGuid(appPackage.ProductCode)!==identity.productCode) invalid('bundle-ui-package');
+  if(manifest.some(element=>['ExePackage','BundlePackage','MspPackage','BootstrapperExtension','ApprovedExeForElevation','Update'].includes(element.name) || element.attributes.DownloadUrl || element.name==='MsiProperty' && element.attributes.Id==='ARPSYSTEMCOMPONENT' && element.attributes.Value==='1')) invalid('bundle-extra-behavior');
+  if(inspection.extension.length!==1 || inspection.extension[0].name!=='BootstrapperExtensionData') invalid('bundle-extension-data');
   return true;
 }
 function verifyPeArchitecture(bytes,arch) {
@@ -39,27 +60,27 @@ function verifyPeArchitecture(bytes,arch) {
 }
 export function validateMsiInspection({inspection,identity,expectedManifest,fixture}) {
   const p = inspection.properties;
-  if (!p || p.ProductVersion !== identity.version || normalizeGuid(p.ProductCode) !== identity.productCode || normalizeGuid(p.UpgradeCode) !== identity.upgradeCode || p.ProductName !== identity.productName || p.Manufacturer !== 'Putio Manager' || p.ALLUSERS || p.REBOOT !== 'ReallySuppress') throw new Error('Installer product identity or per-user scope is invalid.');
-  if (!String(inspection.template).startsWith(identity.arch === 'x64' ? 'x64;' : 'Arm64;')) throw new Error('The MSI architecture is incorrect.');
+  if (!p || p.ProductVersion !== identity.version || normalizeGuid(p.ProductCode) !== identity.productCode || normalizeGuid(p.UpgradeCode) !== identity.upgradeCode || p.ProductName !== identity.productName || p.Manufacturer !== 'Putio Manager' || p.ALLUSERS || p.REBOOT !== 'ReallySuppress') invalid('msi-identity');
+  if (!String(inspection.template).startsWith(identity.arch === 'x64' ? 'x64;' : 'Arm64;')) invalid('msi-architecture');
   const actions = inspection.actions || {};
-  if (!(Number.isInteger(actions.RemoveExistingProducts) && actions.RemoveExistingProducts > actions.InstallInitialize && actions.RemoveExistingProducts < actions.ProcessComponents)) throw new Error('The MSI major upgrade is outside its rollback transaction.');
-  if (!(Number.isInteger(actions.AppSearch) && Number.isInteger(actions.LaunchConditions) && actions.AppSearch < actions.LaunchConditions && actions.LaunchConditions < actions.InstallInitialize)) throw new Error('Architecture validation must run before any install changes.');
-  if (!Array.isArray(inspection.searches) || inspection.searches.length !== 1 || inspection.searches[0].root !== 1 || inspection.searches[0].key !== identity.oppositeRegistryKey || inspection.searches[0].name !== 'InstallLocation' || inspection.searches[0].type !== 18) throw new Error('The opposite architecture registry guard is invalid.');
-  if (!Array.isArray(inspection.appSearch) || inspection.appSearch.length !== 1 || inspection.appSearch[0].property !== 'OPPOSITE_ARCH_INSTALL_LOCATION' || inspection.appSearch[0].signature !== inspection.searches[0].id) throw new Error('The opposite architecture search is not connected to its launch guard.');
-  if (!Array.isArray(inspection.launchConditions) || !inspection.launchConditions.some(row=>row.condition === 'Installed OR NOT OPPOSITE_ARCH_INSTALL_LOCATION')) throw new Error('The installer permits overlapping architecture installations.');
-  if (!Array.isArray(inspection.upgrade) || inspection.upgrade.length < 2 || inspection.upgrade.some(row => normalizeGuid(row.code) !== identity.upgradeCode)) throw new Error('Installer upgrade family is invalid.');
-  if (inspection.binaryCount !== 0) throw new Error('Unexpected executable MSI resources.');
+  if (!(Number.isInteger(actions.RemoveExistingProducts) && actions.RemoveExistingProducts > actions.InstallInitialize && actions.RemoveExistingProducts < actions.ProcessComponents)) invalid('msi-upgrade-order');
+  if (!(Number.isInteger(actions.AppSearch) && Number.isInteger(actions.LaunchConditions) && actions.AppSearch < actions.LaunchConditions && actions.LaunchConditions < actions.InstallInitialize)) invalid('msi-guard-order');
+  if (!Array.isArray(inspection.searches) || inspection.searches.length !== 1 || inspection.searches[0].root !== 1 || inspection.searches[0].key !== identity.oppositeRegistryKey || inspection.searches[0].name !== 'InstallLocation' || inspection.searches[0].type !== 18) invalid('msi-guard-search');
+  if (!Array.isArray(inspection.appSearch) || inspection.appSearch.length !== 1 || inspection.appSearch[0].property !== 'OPPOSITE_ARCH_INSTALL_LOCATION' || inspection.appSearch[0].signature !== inspection.searches[0].id) invalid('msi-guard-property');
+  if (!Array.isArray(inspection.launchConditions) || !inspection.launchConditions.some(row=>row.condition === 'Installed OR NOT OPPOSITE_ARCH_INSTALL_LOCATION')) invalid('msi-guard-condition');
+  if (!Array.isArray(inspection.upgrade) || inspection.upgrade.length < 2 || inspection.upgrade.some(row => normalizeGuid(row.code) !== identity.upgradeCode)) invalid('msi-upgrade-family');
+  if (inspection.binaryCount !== 0) invalid('msi-binary');
   const custom = inspection.customActions;
-  if (!Array.isArray(custom) || (fixture?.failAfterInstallFiles ? custom.length !== 1 || custom[0].id !== 'FixtureFail' || custom[0].type !== 19 || custom[0].target !== 'Generated fixture rollback' : custom.length !== 0)) throw new Error('Unexpected MSI custom action.');
-  if (!Array.isArray(inspection.registry) || inspection.registry.length !== expectedManifest.length + 4 || inspection.registry.some(row => row.root !== 1 || !(row.key === identity.registryKey || row.key === `${identity.registryKey}\\Components`))) throw new Error('Installer registry resources exceed their per-user boundary.');
+  if (!Array.isArray(custom) || (fixture?.failAfterInstallFiles ? custom.length !== 1 || custom[0].id !== 'FixtureFail' || custom[0].type !== 19 || custom[0].target !== 'Generated fixture rollback' : custom.length !== 0)) invalid('msi-custom-actions');
+  if (!Array.isArray(inspection.registry) || inspection.registry.length !== expectedManifest.length + 4 || inspection.registry.some(row => row.root !== 1 || !(row.key === identity.registryKey || row.key === `${identity.registryKey}\\Components`))) invalid('msi-registry');
   for (const [name,value] of [['InstalledVersion',identity.version],['InstallLocation','[INSTALLFOLDER]'],['ProductCode','[ProductCode]']]) {
     const rows = inspection.registry.filter(row => row.name === name && row.key === identity.registryKey);
-    if (rows.length !== 1 || rows[0].value !== value) throw new Error('The installer ownership marker is invalid.');
+    if (rows.length !== 1 || rows[0].value !== value) invalid('msi-owner-values');
   }
-  if (inspection.installDirectoryName !== identity.installDirectoryName || inspection.installDirectoryParent !== 'ProgramsDirectory' || inspection.programsDirectoryName !== 'Programs' || inspection.programsDirectoryParent !== 'LocalAppDataFolder') throw new Error('The installer writes outside its per-user program directory.');
-  if (!Array.isArray(inspection.shortcuts) || inspection.shortcuts.length !== 1 || inspection.shortcuts[0].directory !== 'ApplicationMenu' || inspection.shortcuts[0].target !== '[INSTALLFOLDER]PutioManager.exe' || inspection.shortcuts[0].arguments || inspection.shortcuts[0].workingDirectory !== 'INSTALLFOLDER') throw new Error('Unexpected installer shortcut.');
-  if (!Array.isArray(inspection.removals) || inspection.removals.length !== 1 || inspection.removals[0].filename || inspection.removals[0].directory !== 'ApplicationMenu' || inspection.removals[0].mode !== 2) throw new Error('The installer has unexpected file removal rules.');
-  if (!Array.isArray(inspection.files)) throw new Error('Installer file manifest is missing.');
+  if (inspection.installDirectoryName !== identity.installDirectoryName || inspection.installDirectoryParent !== 'ProgramsDirectory' || inspection.programsDirectoryName !== 'Programs' || inspection.programsDirectoryParent !== 'LocalAppDataFolder') invalid('msi-directory');
+  if (!Array.isArray(inspection.shortcuts) || inspection.shortcuts.length !== 1 || inspection.shortcuts[0].directory !== 'ApplicationMenu' || inspection.shortcuts[0].target !== '[INSTALLFOLDER]PutioManager.exe' || inspection.shortcuts[0].arguments || inspection.shortcuts[0].workingDirectory !== 'INSTALLFOLDER') invalid('msi-shortcut');
+  if (!Array.isArray(inspection.removals) || inspection.removals.length !== 1 || inspection.removals[0].filename || inspection.removals[0].directory !== 'ApplicationMenu' || inspection.removals[0].mode !== 2) invalid('msi-removal');
+  if (!Array.isArray(inspection.files)) invalid('msi-files');
   comparePayloadManifests(expectedManifest,inspection.files);
   return true;
 }
@@ -94,42 +115,51 @@ async function regularFiles(root) {
 export async function auditWindowsInstallers({version,arch,appDirectory,outputDirectory,toolsDirectory,fixture,verifyPayload,verifyBootstrapper}) {
   if (process.platform !== 'win32') throw new Error('Read-only Windows installer auditing requires Windows.');
   const identity = getWindowsInstallerIdentity({version,arch,family:fixture?.family});
-  const expectedManifest = await createPayloadManifest(appDirectory);
+  const expectedManifest = await auditStage('application-manifest',()=>createPayloadManifest(appDirectory));
   const names = installerAssetNames(version,arch);
   const msi = path.resolve(outputDirectory,names.msi), exe = path.resolve(outputDirectory,names.exe);
   const work = await fs.mkdtemp(path.join(os.tmpdir(),'putio-installer-audit-'));
   let succeeded = false;
   try {
-    const {executable} = await ensureWix(toolsDirectory);
+    const {executable} = await auditStage('toolchain',()=>ensureWix(toolsDirectory));
     const containerDirectory = path.join(work,'bundle-containers');
     const bootstrapperDirectory = path.join(work,'bundle-bootstrapper');
-    await runTool(executable,['burn','extract',exe,'-o',containerDirectory,'-oba',bootstrapperDirectory]);
-    const bootstrapperFiles=(await regularFiles(bootstrapperDirectory)).map(filename=>path.relative(bootstrapperDirectory,filename).replaceAll('\\','/')).sort();
-    if(JSON.stringify(bootstrapperFiles)!==JSON.stringify([...WIX_BOOTSTRAPPER_FILES].sort())) throw new Error('The bootstrapper contains unexpected resources.');
-    verifyPeArchitecture(await fs.readFile(exe),arch);
-    verifyPeArchitecture(await fs.readFile(path.join(bootstrapperDirectory,'wixstdba.exe')),arch);
-    const containerFiles = await regularFiles(containerDirectory);
-    if (containerFiles.length !== 1 || path.extname(containerFiles[0]).toLowerCase() !== '.msi') throw new Error('The bootstrapper must contain exactly one MSI.');
-    const msiBytes = await fs.readFile(msi), embedded = await fs.readFile(containerFiles[0]);
-    if (!msiBytes.equals(embedded)) throw new Error('The bootstrapper embeds a different MSI.');
-    const helper = await ensureAuditHelper(toolsDirectory);
+    await auditStage('bundle-extraction',()=>runTool(executable,['burn','extract',exe,'-o',containerDirectory,'-oba',bootstrapperDirectory]));
+    await auditStage('bundle-inventory',async()=>{
+      const bootstrapperFiles=(await regularFiles(bootstrapperDirectory)).map(filename=>path.relative(bootstrapperDirectory,filename).replaceAll('\\','/')).sort();
+      if(JSON.stringify(bootstrapperFiles)!==JSON.stringify([...WIX_BOOTSTRAPPER_FILES].sort())) throw new Error('The bootstrapper contains unexpected resources.');
+    });
+    await auditStage('bundle-architecture',async()=>{
+      verifyPeArchitecture(await fs.readFile(exe),arch);
+      verifyPeArchitecture(await fs.readFile(path.join(bootstrapperDirectory,'wixstdba.exe')),arch);
+    });
+    const msiBytes=await auditStage('embedded-msi',async()=>{
+      const containerFiles = await regularFiles(containerDirectory);
+      if (containerFiles.length !== 1 || path.extname(containerFiles[0]).toLowerCase() !== '.msi') throw new Error('The bootstrapper must contain exactly one MSI.');
+      const bytes = await fs.readFile(msi), embedded = await fs.readFile(containerFiles[0]);
+      if (!bytes.equals(embedded)) throw new Error('The bootstrapper embeds a different MSI.');
+      return bytes;
+    });
+    const helper = await auditStage('audit-helper-build',()=>ensureAuditHelper(toolsDirectory));
     const bundleInspectionFile=path.join(work,'bundle-inspection.json');
-    await runTool('dotnet',[helper,'--bootstrapper',bootstrapperDirectory,bundleInspectionFile]);
-    validateBootstrapperInspection({inspection:JSON.parse(await fs.readFile(bundleInspectionFile,'utf8')),identity,names});
-    if(verifyBootstrapper) await verifyBootstrapper(bootstrapperDirectory,WIX_BOOTSTRAPPER_FILES);
-    const inspection = await inspectMsi({msi,outputDirectory:path.join(work,'msi'),toolsDirectory,helper});
-    validateMsiInspection({inspection,identity,expectedManifest,fixture});
+    await auditStage('bundle-xml-read',()=>runTool('dotnet',[helper,'--bootstrapper',bootstrapperDirectory,bundleInspectionFile]));
+    await auditStage('bundle-metadata',async()=>validateBootstrapperInspection({inspection:JSON.parse(await fs.readFile(bundleInspectionFile,'utf8')),identity,names}));
+    if(verifyBootstrapper) await auditStage('bundle-privacy',()=>verifyBootstrapper(bootstrapperDirectory,WIX_BOOTSTRAPPER_FILES));
+    const inspection = await auditStage('msi-read',()=>inspectMsi({msi,outputDirectory:path.join(work,'msi'),toolsDirectory,helper}));
+    await auditStage('msi-metadata',()=>validateMsiInspection({inspection,identity,expectedManifest,fixture}));
     const payloadDirectory = path.join(work,'application');
-    await fs.mkdir(payloadDirectory);
-    for (const file of inspection.files) {
-      const source = path.resolve(file.source), sourceRoot = path.resolve(work,'msi','files');
-      if (!source.startsWith(`${sourceRoot}${path.sep}`)) throw new Error('Extracted MSI source escaped its audit directory.');
-      const target = path.join(payloadDirectory,file.path);
-      await fs.mkdir(path.dirname(target),{recursive:true});
-      await fs.copyFile(source,target);
-    }
-    comparePayloadManifests(expectedManifest,await createPayloadManifest(payloadDirectory));
-    if (verifyPayload) await verifyPayload(payloadDirectory);
+    await auditStage('payload-reconstruction',async()=>{
+      await fs.mkdir(payloadDirectory);
+      for (const file of inspection.files) {
+        const source = path.resolve(file.source), sourceRoot = path.resolve(work,'msi','files');
+        if (!source.startsWith(`${sourceRoot}${path.sep}`)) throw new Error('Extracted MSI source escaped its audit directory.');
+        const target = path.join(payloadDirectory,file.path);
+        await fs.mkdir(path.dirname(target),{recursive:true});
+        await fs.copyFile(source,target);
+      }
+    });
+    await auditStage('payload-comparison',async()=>comparePayloadManifests(expectedManifest,await createPayloadManifest(payloadDirectory)));
+    if (verifyPayload) await auditStage('payload-privacy',()=>verifyPayload(payloadDirectory));
     succeeded = true;
     return {ok:true,payloadDirectory,bootstrapperDirectory,containerDirectory,identity,files:expectedManifest.length,msiSha256:digest(msiBytes),exeSha256:digest(await fs.readFile(exe)),cleanup:() => fs.rm(work,{recursive:true,force:true})};
   } finally { if (!succeeded) await fs.rm(work,{recursive:true,force:true}); }
@@ -146,5 +176,5 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     }});
     await result.cleanup();
     console.log('Verified exact Windows installer identity, payload and embedded MSI.');
-  } catch { console.error('Windows installer audit failed. No private diagnostics were printed.'); process.exitCode=1; }
+  } catch(error) { console.error(`Windows installer audit failed: ${JSON.stringify(auditFailureStatus(error))}`); process.exitCode=1; }
 }

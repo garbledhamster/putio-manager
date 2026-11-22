@@ -678,4 +678,12 @@ Before an update or planned interruption, use the manager's `pause` command and 
 
 End-user error messages use short sentences, consistent terms and explicit next actions informed by ASD-STE100. They replace internal terms such as ownership anchors and publication with a description of the affected download step. This is not a certification claim. The message separates an unverified destination, a temporary-file cleanup problem and an uncertain put.io deletion. It does not invent a cause for an older generic error or claim a copy is safe without verification evidence.
 
+## Maintainer releases
+
+Give each release a new stable three-part version in `package.json` and `package-lock.json`. Check the source, generated illustrations and new commit identities for private data before pushing. Keep the release's signing key private and keep its matching public verification key in the application.
+
+A push to `main` starts the six native builds. After all build, installation, update and payload checks pass, the publication workflow validates that exact build, signs its update metadata and Mac archives with the repository's `PUTIO_UPDATE_SIGNING_KEY` secret, verifies the uploaded files, and publishes the GitHub release. An existing version or tag is kept; publish a newer version for later changes. Do not replace files in a published release.
+
+Desktop clients find that newer stable release through **Settings → Updates** or the update CLI. Headless Linux servers have a separate [backup and upgrade procedure](#linux-server-backup-and-upgrade).
+
 

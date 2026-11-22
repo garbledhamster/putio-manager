@@ -15,28 +15,35 @@ function matchingKeys(privateInput, publicInput) {
 }
 export function canonicalUpdateMetadata(version, assets) {
   stableVersion(version);
-  const sorted = assets.map(({ name, bytes, sha256 }) => ({ name, bytes, sha256 })).sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
+  const sorted = assets.map(({ name, bytes, sha256, ed25519 }) => ({ name, bytes, sha256, ...(ed25519 === undefined ? {} : { ed25519 }) })).sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
   if (new Set(sorted.map(asset => asset.name)).size !== sorted.length || sorted.some(asset => !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(asset.name) || !Number.isSafeInteger(asset.bytes) || asset.bytes < 1 || !/^[a-f0-9]{64}$/.test(asset.sha256))) throw new Error('Invalid signed update asset inventory.');
+  for (const asset of sorted) {
+    const mac = /^PutioManager-.*-macos-(x64|arm64)-update\.zip$/.test(asset.name);
+    if ((mac || asset.ed25519 !== undefined) && (!mac || !validArchiveSignature(asset.ed25519))) throw new Error('Invalid signed archive binding.');
+  }
   return Buffer.from(`${JSON.stringify({ schema: 1, version, assets: sorted })}\n`, 'utf8');
 }
+function validArchiveSignature(value) { return typeof value === 'string' && /^[A-Za-z0-9+/]{86}==$/.test(value) && Buffer.from(value, 'base64').length === 64 && Buffer.from(value, 'base64').toString('base64') === value; }
 export function macAppcast(version, arch, bytes, signature) {
   stableVersion(version);
-  if (!['x64', 'arm64'].includes(arch) || !Number.isSafeInteger(bytes) || bytes < 1 || !/^[A-Za-z0-9+/]{86}==$/.test(signature)) throw new Error('Invalid appcast inputs.');
+  if (!['x64', 'arm64'].includes(arch) || !Number.isSafeInteger(bytes) || bytes < 1 || !validArchiveSignature(signature)) throw new Error('Invalid appcast inputs.');
   const name = `PutioManager-${version}-macos-${arch}-update.zip`;
   return `<?xml version="1.0" encoding="utf-8"?>\n<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle"><channel><title>Putio Manager updates</title><item><title>Putio Manager ${version}</title><sparkle:version>${version}</sparkle:version><sparkle:shortVersionString>${version}</sparkle:shortVersionString><sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion><enclosure url="https://github.com/garbledhamster/putio-manager/releases/download/v${version}/${name}" length="${bytes}" type="application/octet-stream" sparkle:os="macos" sparkle:edSignature="${signature}" /></item></channel></rss>\n`;
 }
 export async function signUpdates(directory, version, privateInput, publicInput) {
   const { privateKey, publicKey } = matchingKeys(privateInput, publicInput);
   const assets = await inspectReleaseAssets(directory, version, 'build');
+  const archiveSignatures = new Map();
   for (const arch of ['x64', 'arm64']) {
     const asset = assets.find(value => value.name === `PutioManager-${version}-macos-${arch}-update.zip`);
     const raw = await readFile(path.join(directory, asset.name));
     const signature = sign(null, raw, privateKey);
     if (!verify(null, raw, publicKey, signature)) throw new Error('Archive signature verification failed.');
+    archiveSignatures.set(asset.name, signature.toString('base64'));
     await writeFile(path.join(directory, `appcast-${arch}.xml`), macAppcast(version, arch, raw.length, signature.toString('base64')), { flag: 'wx' });
   }
   const signedAssets = await inspectReleaseAssets(directory, version, 'signing');
-  const bytes = canonicalUpdateMetadata(version, signedAssets), signature = sign(null, bytes, privateKey);
+  const bytes = canonicalUpdateMetadata(version, signedAssets.map(asset => archiveSignatures.has(asset.name) ? { ...asset, ed25519: archiveSignatures.get(asset.name) } : asset)), signature = sign(null, bytes, privateKey);
   if (!verify(null, bytes, publicKey, signature)) throw new Error('Update signature verification failed.');
   const manifest = `PutioManager-${version}-updates.json`;
   await writeFile(path.join(directory, manifest), bytes, { flag: 'wx' });
@@ -51,14 +58,16 @@ export async function verifySignedUpdates(directory, version, publicInput) {
   const filename = `PutioManager-${version}-updates.json`, bytes = await readFile(path.join(directory, filename));
   const text = (await readFile(path.join(directory, `${filename}.sig`), 'utf8')).trim();
   if (!/^[A-Za-z0-9+/]{86}==$/.test(text) || !verify(null, bytes, publicKey, Buffer.from(text, 'base64'))) throw new Error('Update signature verification failed.');
-  const expected = canonicalUpdateMetadata(version, assets.filter(asset => ![filename, `${filename}.sig`].includes(asset.name)));
-  if (!bytes.equals(expected)) throw new Error('Signed update content does not match the publication inventory.');
+  const archiveSignatures = new Map();
   for (const arch of ['x64', 'arm64']) {
     const archive = await readFile(path.join(directory, `PutioManager-${version}-macos-${arch}-update.zip`));
     const appcast = await readFile(path.join(directory, `appcast-${arch}.xml`), 'utf8');
     const signature = /sparkle:edSignature="([A-Za-z0-9+/]{86}==)"/.exec(appcast)?.[1];
     if (!signature || appcast !== macAppcast(version, arch, archive.length, signature) || !verify(null, archive, publicKey, Buffer.from(signature, 'base64'))) throw new Error('Archive signature verification failed.');
+    archiveSignatures.set(`PutioManager-${version}-macos-${arch}-update.zip`, signature);
   }
+  const expected = canonicalUpdateMetadata(version, assets.filter(asset => ![filename, `${filename}.sig`].includes(asset.name)).map(asset => archiveSignatures.has(asset.name) ? { ...asset, ed25519: archiveSignatures.get(asset.name) } : asset));
+  if (!bytes.equals(expected)) throw new Error('Signed update content does not match the publication inventory.');
   return true;
 }
 async function main() {

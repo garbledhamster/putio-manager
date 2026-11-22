@@ -16,6 +16,7 @@ async function fixture(t, platform) {
   const bytes = Buffer.from('generated updater fixture');
   const name = platform === 'darwin' ? 'PutioManager-2.2.0-macos-x64-update.zip' : 'PutioManager-2.2.0-linux-x64.AppImage';
   const asset = { name, url: `https://github.com/garbledhamster/putio-manager/releases/download/v2.2.0/${name}`, bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') };
+  if (platform === 'darwin') asset.ed25519 = Buffer.alloc(64, 1).toString('base64');
   return { dir, context, bytes, release: { version: '2.2.0', platform: platform === 'darwin' ? 'macos' : 'linux', arch: 'x64', asset, assets: [asset] } };
 }
 function linuxDependencies(bytes, overrides = {}) {
@@ -60,7 +61,20 @@ test('Mac preparation waits for verified-ready and does not send install early',
   const adapter = adapterFactory()(f.context, { spawn: (_exe, args, options) => { spawnOptions = options; assert.equal(args[args.indexOf('--feed-url') + 1], 'https://github.com/garbledhamster/putio-manager/releases/download/v2.2.0/appcast-x64.xml'); queueMicrotask(() => { child.stdout.write(JSON.stringify({ schema: 1, phase: 'available', version: '2.2.0' }) + '\n'); child.stdout.write(JSON.stringify({ schema: 1, phase: 'ready' }) + '\n'); }); return child; } });
   const prepared = await adapter.prepare(f.release, new AbortController().signal, () => {});
   assert.equal(commands, ''); assert.equal(f.context.quit, undefined); assert.equal(spawnOptions.shell, false);
+  assert.equal(spawnOptions.env.PUTIO_UPDATER_EXPECTED_SIGNATURE, f.release.asset.ed25519);
+  assert.equal(spawnOptions.env.PUTIO_UPDATER_EXPECTED_BYTES, String(f.bytes.length));
   await adapter.handoff(prepared); assert.equal(commands, 'install\n');
+});
+test('Mac cannot start a helper without its canonical signed archive binding', async t => {
+  const f = await fixture(t, 'darwin');
+  const helper = path.join(f.context.resourcesDirectory, 'updater', 'sparkle.app', 'Contents', 'MacOS', 'sparkle');
+  await fs.mkdir(path.dirname(helper), { recursive: true }); await fs.writeFile(helper, 'generated');
+  let calls = 0;
+  const adapter = adapterFactory()(f.context, { spawn: () => { calls++; throw Error('must not start'); } });
+  for (const ed25519 of [undefined, 'invalid', Buffer.alloc(63).toString('base64')]) {
+    await assert.rejects(adapter.prepare({ ...f.release, asset: { ...f.release.asset, ed25519 } }, new AbortController().signal, () => {}), /release-invalid/);
+  }
+  assert.equal(calls, 0);
 });
 test('Mac malformed, wrong-version and signature-failure events never grant handoff', async t => {
   for (const [event, code] of [
@@ -68,6 +82,8 @@ test('Mac malformed, wrong-version and signature-failure events never grant hand
     [JSON.stringify({ schema: 1, phase: 'available', version: '9.9.9' }), 'release-invalid'],
     [JSON.stringify({ schema: 1, phase: 'ready' }), 'release-invalid'],
     [JSON.stringify({ schema: 1, phase: 'failed', code: 'signature-invalid', detail: '/private/fixture' }), 'signature-invalid'],
+    [JSON.stringify({ schema: 1, phase: 'failed', code: 'release-invalid' }), 'release-invalid'],
+    [JSON.stringify({ schema: 1, phase: 'failed', code: 'download-invalid' }), 'download-invalid'],
   ]) {
     const f = await fixture(t, 'darwin');
     const helper = path.join(f.context.resourcesDirectory, 'updater', 'sparkle.app', 'Contents', 'MacOS', 'sparkle');
