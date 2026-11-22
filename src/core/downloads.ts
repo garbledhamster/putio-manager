@@ -501,6 +501,14 @@ export class DownloadQueue {
       return;
     }
     for (const job of this.jobs) if (job.stagingWarning === blocked) { delete job.stagingWarning; this.changed(); }
+    // Enqueue/retry can briefly hold admission while an active download finishes.
+    // Reopen only retained run intent; explicit pause/cancel and shutdown stay held.
+    if (!this.paused && !this.stopping) {
+      for (const job of this.jobs) {
+        const record = this.recovery[job.id];
+        if (job.status === "paused" && record?.intent === "run" && !record.finalization && this.sources.has(job.id)) job.status = "queued";
+      }
+    }
     while (!this.paused && this.active.size < Math.max(1, this.concurrency())) {
       const job = this.jobs.find((j) => j.status === "queued" && !this.active.has(j.id));
       if (!job) break;

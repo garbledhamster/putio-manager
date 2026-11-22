@@ -19,7 +19,7 @@
     "verify": "npm run typecheck && npm run build && npm test && npm run test:ui",
     "test:integration": "node --test tests/integration.test.cjs",
     "test:package": "node scripts/test-package.mts",
-    "test:engine": "node --test tests/engine.test.cjs tests/download-resilience.test.cjs tests/cleanup-resilience.test.cjs tests/cleanup-publication-guards.test.cjs tests/api-recovery.test.cjs tests/zip-regeneration.test.cjs tests/terminal-diagnostics.test.cjs",
+    "test:engine": "node --test tests/engine.test.cjs tests/download-resilience.test.cjs tests/cleanup-resilience.test.cjs tests/cleanup-publication-guards.test.cjs tests/api-recovery.test.cjs tests/zip-regeneration.test.cjs tests/terminal-diagnostics.test.cjs tests/queue-admission-pause.test.cjs",
     "test:remote": "node --test tests/remote.test.cjs tests/cli.test.cjs",
     "test:ui-assets": "node scripts/test-ui-assets.mts",
     "test:platform": "node --test tests/platform.test.cjs tests/setup.test.cjs",
