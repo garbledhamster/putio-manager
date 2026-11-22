@@ -656,12 +656,18 @@ export async function runUiScenario(window: BrowserWindow, remote: { url: string
   await evaluate(`[...document.querySelectorAll('#downloads-table tbody tr')].find(row => row.textContent.includes('folder-pending-14.bin')).click()`);
   await waitFor(`document.querySelector('#downloads-cancel').disabled && document.querySelector('#downloads-cancel-all').disabled`, "retained completed row has no active cleanup controls");
   const realLink = fs.link;
-  let releaseLink!: () => void;
+  let releaseLink!: () => void, enteredLink!: () => void;
   const linkGate = new Promise<void>(resolve => { releaseLink = resolve; });
-  fs.link = async (existing, destination) => { if (String(destination).endsWith("finalizing.bin")) await linkGate; return realLink(existing, destination); };
+  const linkEntered = new Promise<void>(resolve => { enteredLink = resolve; });
+  fs.link = async (existing, destination) => { if (String(destination).endsWith("finalizing.bin")) { enteredLink(); await linkGate; } return realLink(existing, destination); };
   try {
     await evaluate("window.putio.downloadFile('6', {deleteAfterDownload:true})");
     await waitFor("window.putio.getState().then(s => s.jobs.some(j => j.name === 'finalizing.bin' && j.status === 'finalizing'))", "publication in progress");
+    // Finalizing precedes durable saves and the pre-link cancellation check.
+    // This case exercises cancellation only after publication actually starts.
+    let linkTimer: ReturnType<typeof setTimeout> | undefined;
+    try { await Promise.race([linkEntered, new Promise<never>((_, reject) => { linkTimer = setTimeout(() => reject(new Error("Publication link was not reached.")), 15000); })]); }
+    finally { if (linkTimer) clearTimeout(linkTimer); }
     await evaluate(`[...document.querySelectorAll('#downloads-table tbody tr')].find(row => row.textContent.includes('finalizing.bin')).click()`);
     if (await evaluate<boolean>("document.querySelector('#downloads-cancel').disabled")) throw new Error("Cancel must remain available while finalizing.");
     await click("#downloads-cancel");
