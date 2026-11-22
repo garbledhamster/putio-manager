@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { constants, existsSync, lstatSync, promises as fs } from "node:fs";
+import { constants, existsSync, lstatSync, realpathSync, promises as fs } from "node:fs";
 import path from "node:path";
 import { createServer, type Server } from "node:http";
 import { pipeline } from "node:stream/promises";
@@ -32,6 +32,35 @@ async function imageIdentity(filename: string) {
   return { dev: info.dev, ino: info.ino, size: info.size, mtimeNs: info.mtimeNs, ctimeNs: info.ctimeNs, mode: Number(info.mode & 0o777n) };
 }
 function sameImage(first: FileIdentity, second: FileIdentity) { return first.dev === second.dev && first.ino === second.ino && first.size === second.size && first.mtimeNs === second.mtimeNs && first.ctimeNs === second.ctimeNs; }
+
+/** Inherited AppImage variables identify this installation only when its running files belong to that mount. */
+function linuxInstallation(context: NativeUpdateContext, environment: NodeJS.ProcessEnv) {
+  try {
+    const image = environment.APPIMAGE, mount = environment.APPDIR;
+    if (!image || !mount || !path.isAbsolute(image) || !path.isAbsolute(mount) || !image.endsWith(".AppImage")) return;
+    const filenames = [mount, context.applicationDirectory, context.resourcesDirectory, context.executablePath, image];
+    const entries = filenames.map((filename, index) => {
+      if (!path.isAbsolute(filename)) throw failure("unsupported-installation");
+      const info = lstatSync(filename, { bigint: true }), canonical = realpathSync(filename);
+      if (info.isSymbolicLink() || (index < 3 ? !info.isDirectory() : !info.isFile())) throw failure("unsupported-installation");
+      return { filename, canonical, dev: info.dev, ino: info.ino };
+    });
+    // The runtime documents resolved APPIMAGE and a real APPDIR mountpoint.
+    if (entries[0].canonical !== path.resolve(mount) || entries[4].canonical !== path.resolve(image)) return;
+    for (const entry of entries.slice(1, 4)) {
+      const relative = path.relative(entries[0].canonical, entry.canonical);
+      if (path.isAbsolute(relative) || relative === ".." || relative.startsWith(`..${path.sep}`)) return;
+    }
+    return { image, mount, entries };
+  } catch { return; }
+}
+function sameLinuxInstallation(context: NativeUpdateContext, environment: NodeJS.ProcessEnv, original: ReturnType<typeof linuxInstallation>) {
+  const actual = linuxInstallation(context, environment);
+  return !!original && !!actual && original.image === actual.image && original.mount === actual.mount && original.entries.every((entry, index) => {
+    const current = actual.entries[index];
+    return entry.filename === current.filename && entry.canonical === current.canonical && entry.dev === current.dev && entry.ino === current.ino;
+  });
+}
 type NativeDirectoryOwner = { directory: string; canonical: string; dev: bigint; ino: bigint; root: string; rootDev: bigint; rootIno: bigint };
 async function ownNativeDirectory(directory: string): Promise<NativeDirectoryOwner> {
   const info = await fs.lstat(directory, { bigint: true }), root = path.dirname(directory), parent = await fs.lstat(root, { bigint: true });
@@ -282,7 +311,8 @@ export function createNativeUpdateAdapter(context: NativeUpdateContext, dependen
   const image = environment.APPIMAGE;
   const mac = context.platform === "darwin";
   if (mac) return createMacUpdateAdapter(context, dependencies, helperPath);
-  const supported = context.isPackaged && ["x64", "arm64"].includes(context.arch) && (mac ? existsSync(helperPath) : context.platform === "linux" && !!image && (() => { try { const s = lstatSync(image); return s.isFile() && !s.isSymbolicLink() && image.endsWith(".AppImage"); } catch { return false; } })());
+  const installation = context.platform === "linux" ? linuxInstallation(context, environment) : undefined;
+  const supported = context.isPackaged && ["x64", "arm64"].includes(context.arch) && !!installation;
   let prepared: PreparedDesktopUpdate | undefined;
   let preparing = false;
   let handedOff = false;
@@ -305,7 +335,7 @@ export function createNativeUpdateAdapter(context: NativeUpdateContext, dependen
   return {
     supported,
     async prepare(release, signal, progress) {
-      if (!supported) throw failure("unsupported-installation");
+      if (!supported || !sameLinuxInstallation(context, environment, installation)) throw failure("unsupported-installation");
       if (preparing || prepared || handedOff) throw failure("installer-busy");
       validate(release);
       if (signal.aborted) throw failure("installer-cancelled");
@@ -354,6 +384,7 @@ export function createNativeUpdateAdapter(context: NativeUpdateContext, dependen
     },
     async handoff(value) {
       if (!prepared || value.id !== prepared.id || value.version !== prepared.version || handedOff) throw failure("installer-failed");
+      if (!sameLinuxInstallation(context, environment, installation)) throw failure("unsupported-installation");
       handedOff = true; prepared = undefined;
       let linuxCommitted = false;
       try {
@@ -380,6 +411,7 @@ export function createNativeUpdateAdapter(context: NativeUpdateContext, dependen
         await verifyUpdateFile(staged.file, staged.release.asset);
         if (!sameImage(staged.identity, await imageIdentity(staged.file)) || exited || relaunchChild?.exitCode != null || relaunchChild?.signalCode != null || !sameImage(staged.original, await imageIdentity(image!))) throw failure("installer-failed");
         if (exited) throw failure("installer-failed");
+        if (!sameLinuxInstallation(context, environment, installation)) throw failure("installer-failed");
         // The complete verified file is already durable on the same filesystem.
         // rename-over-old is the only commit point; never unlink the running image.
         await (dependencies.rename ?? fs.rename)(staged.file, image!);

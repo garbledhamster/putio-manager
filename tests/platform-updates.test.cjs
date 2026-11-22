@@ -24,11 +24,16 @@ async function fixture(t, platform) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'native-updater-'));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const context = { platform, arch: 'x64', currentVersion: '2.1.0', isPackaged: true, resourcesDirectory: path.join(dir, 'resources'), applicationDirectory: path.join(dir, 'PutioManager.app'), executablePath: path.join(dir, 'app'), userDataDirectory: path.join(dir, 'profile'), quitApplication() { context.quit = true; } };
+  const appDir = path.join(dir, 'AppDir');
+  if (platform === 'linux') {
+    context.applicationDirectory = appDir; context.resourcesDirectory = path.join(appDir, 'resources'); context.executablePath = path.join(appDir, 'PutioManager');
+    await fs.mkdir(context.resourcesDirectory, { recursive: true }); await fs.writeFile(context.executablePath, 'generated executable');
+  }
   const bytes = Buffer.from('generated updater fixture');
   const name = platform === 'darwin' ? 'PutioManager-2.2.0-macos-x64-update.zip' : 'PutioManager-2.2.0-linux-x64.AppImage';
   const asset = { name, url: `https://github.com/garbledhamster/putio-manager/releases/download/v2.2.0/${name}`, bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') };
   if (platform === 'darwin') asset.ed25519 = Buffer.alloc(64, 1).toString('base64');
-  return { dir, context, bytes, release: { version: '2.2.0', platform: platform === 'darwin' ? 'macos' : 'linux', arch: 'x64', asset, assets: [asset] } };
+  return { dir, appDir, context, bytes, release: { version: '2.2.0', platform: platform === 'darwin' ? 'macos' : 'linux', arch: 'x64', asset, assets: [asset] } };
 }
 function linuxDependencies(bytes, overrides = {}) {
   return {
@@ -46,10 +51,86 @@ test('native adapter rejects unsupported and unpackaged installations without wo
   assert.equal(adapter.supported, false);
   await assert.rejects(adapter.prepare(f.release, new AbortController().signal, () => {}), /unsupported-installation/);
 });
+
+test('portable Linux cannot update an unrelated inherited AppImage or an absent mount', async t => {
+  const f = await fixture(t, 'linux'), image = path.join(f.dir, 'Other.AppImage'), otherDir = path.join(f.dir, 'OtherAppDir');
+  await fs.writeFile(image, 'other application'); await fs.mkdir(otherDir);
+  for (const environment of [{ APPIMAGE: image, APPDIR: otherDir }, { APPIMAGE: image }, { APPIMAGE: image, APPDIR: 'relative-mount' }]) {
+    let requests = 0, spawns = 0;
+    const before = (await fs.readdir(f.dir)).sort();
+    const adapter = adapterFactory()(f.context, { environment, fetcher: async () => { requests++; throw Error('must not fetch'); }, spawn() { spawns++; throw Error('must not spawn'); } });
+    assert.equal(adapter.supported, false);
+    await assert.rejects(adapter.prepare(f.release, new AbortController().signal, () => {}), /unsupported-installation/);
+    assert.equal(requests, 0); assert.equal(spawns, 0); assert.deepEqual((await fs.readdir(f.dir)).sort(), before);
+    assert.equal(await fs.readFile(image, 'utf8'), 'other application'); await assert.rejects(fs.access(f.context.userDataDirectory));
+  }
+});
+
+test('Linux requires its executable, application and resources to belong to the AppDir', async t => {
+  const f = await fixture(t, 'linux'), image = path.join(f.dir, 'PutioManager.AppImage'); await fs.writeFile(image, 'old');
+  for (const field of ['executablePath', 'applicationDirectory', 'resourcesDirectory']) {
+    const foreign = path.join(f.dir, field);
+    if (field === 'executablePath') await fs.writeFile(foreign, 'foreign executable'); else await fs.mkdir(foreign);
+    const adapter = adapterFactory()({ ...f.context, [field]: foreign }, { environment: { APPIMAGE: image, APPDIR: f.appDir } });
+    assert.equal(adapter.supported, false);
+    await assert.rejects(adapter.prepare(f.release, new AbortController().signal, () => {}), /unsupported-installation/);
+  }
+  await assert.rejects(fs.access(f.context.userDataDirectory));
+});
+
+test('Linux does not accept an AppDir alias in place of the runtime mount', async t => {
+  const f = await fixture(t, 'linux'), image = path.join(f.dir, 'PutioManager.AppImage'), alias = path.join(f.dir, 'mount-alias');
+  await fs.writeFile(image, 'old'); await fs.symlink(f.appDir, alias, process.platform === 'win32' ? 'junction' : 'dir');
+  const adapter = adapterFactory()(f.context, { environment: { APPIMAGE: image, APPDIR: alias } });
+  assert.equal(adapter.supported, false);
+  await assert.rejects(adapter.prepare(f.release, new AbortController().signal, () => {}), /unsupported-installation/);
+  await assert.rejects(fs.access(f.context.userDataDirectory));
+});
+
+test('Linux rejects environment drift before preparing without creating update state', async t => {
+  for (const key of ['APPIMAGE', 'APPDIR']) {
+    const f = await fixture(t, 'linux'), image = path.join(f.dir, 'PutioManager.AppImage'); await fs.writeFile(image, 'old');
+    const environment = { APPIMAGE: image, APPDIR: f.appDir };
+    let requests = 0;
+    const adapter = adapterFactory()(f.context, { environment, fetcher: async () => { requests++; throw Error('must not fetch'); } });
+    assert.equal(adapter.supported, true); environment[key] = path.join(f.dir, 'unrelated');
+    await assert.rejects(adapter.prepare(f.release, new AbortController().signal, () => {}), /unsupported-installation/);
+    assert.equal(requests, 0); await assert.rejects(fs.access(f.context.userDataDirectory));
+  }
+});
+
+test('Linux rejects an AppDir pathname substituted before prepare or handoff', async t => {
+  for (const phase of ['prepare', 'handoff']) {
+    const f = await fixture(t, 'linux'), image = path.join(f.dir, 'PutioManager.AppImage'); await fs.writeFile(image, 'old');
+    let spawns = 0;
+    const adapter = adapterFactory()(f.context, { ...linuxDependencies(f.bytes), environment: { APPIMAGE: image, APPDIR: f.appDir }, spawn() { spawns++; throw Error('must not spawn'); } });
+    assert.equal(adapter.supported, true);
+    const prepared = phase === 'handoff' ? await adapter.prepare(f.release, new AbortController().signal, () => {}) : undefined;
+    await fs.rename(f.appDir, f.appDir + '-retained'); await fs.mkdir(f.context.resourcesDirectory, { recursive: true }); await fs.writeFile(f.context.executablePath, 'foreign replacement');
+    await assert.rejects(phase === 'prepare' ? adapter.prepare(f.release, new AbortController().signal, () => {}) : adapter.handoff(prepared), /unsupported-installation/);
+    assert.equal(spawns, 0); assert.equal(await fs.readFile(image, 'utf8'), 'old'); assert.equal(await fs.readFile(f.context.executablePath, 'utf8'), 'foreign replacement');
+    if (phase === 'prepare') await assert.rejects(fs.access(f.context.userDataDirectory));
+    await adapter.cancel();
+  }
+});
+
+test('Linux revalidates the bound mount before handoff and after relaunch acknowledgement', async t => {
+  for (const phase of ['handoff', 'acknowledgement']) {
+    const f = await fixture(t, 'linux'), image = path.join(f.dir, 'PutioManager.AppImage'); await fs.writeFile(image, 'old');
+    const environment = { APPIMAGE: image, APPDIR: f.appDir }; let spawns = 0;
+    const dependencies = linuxDependencies(f.bytes);
+    const adapter = adapterFactory()(f.context, { ...dependencies, environment, spawn(...args) { spawns++; const child = dependencies.spawn(...args); environment.APPDIR = path.join(f.dir, 'unrelated'); return child; } });
+    const prepared = await adapter.prepare(f.release, new AbortController().signal, () => {});
+    if (phase === 'handoff') environment.APPDIR = path.join(f.dir, 'unrelated');
+    await assert.rejects(adapter.handoff(prepared), phase === 'handoff' ? /unsupported-installation/ : /installer-failed/);
+    assert.equal(spawns, phase === 'handoff' ? 0 : 1); assert.equal(await fs.readFile(image, 'utf8'), 'old'); assert.equal(f.context.quit, undefined);
+    await adapter.cancel();
+  }
+});
 test('Linux verifies exact downloaded bytes before a separately authorized handoff', async t => {
   const f = await fixture(t, 'linux');
   const image = path.join(f.dir, 'PutioManager.AppImage'); await fs.writeFile(image, 'old');
-  const adapter = adapterFactory()(f.context, { ...linuxDependencies(f.bytes), environment: { APPIMAGE: image } });
+  const adapter = adapterFactory()(f.context, { ...linuxDependencies(f.bytes), environment: { APPIMAGE: image, APPDIR: f.appDir } });
   const prepared = await adapter.prepare(f.release, new AbortController().signal, () => {});
   assert.equal(await fs.readFile(image, 'utf8'), 'old'); assert.equal(f.context.quit, undefined);
   await assert.rejects(adapter.handoff({ ...prepared, id: 'forged' }), /installer-failed/);
@@ -58,20 +139,20 @@ test('Linux verifies exact downloaded bytes before a separately authorized hando
 });
 test('Linux hash mismatch and wrong release cannot install', async t => {
   const f = await fixture(t, 'linux'), image = path.join(f.dir, 'PutioManager.AppImage'); await fs.writeFile(image, 'old');
-  const adapter = adapterFactory()(f.context, { ...linuxDependencies('bad'), environment: { APPIMAGE: image } });
+  const adapter = adapterFactory()(f.context, { ...linuxDependencies('bad'), environment: { APPIMAGE: image, APPDIR: f.appDir } });
   await assert.rejects(adapter.prepare(f.release, new AbortController().signal, () => {}), /download-invalid/);
   await assert.rejects(adapter.prepare({ ...f.release, arch: 'arm64' }, new AbortController().signal, () => {}), /release-invalid/);
 });
 test('already-cancelled Linux preparation does not create or invoke an updater', async t => {
   const f = await fixture(t, 'linux'), image = path.join(f.dir, 'PutioManager.AppImage'); await fs.writeFile(image, 'generated');
   let invoked = false;
-  const adapter = adapterFactory()(f.context, { ...linuxDependencies(f.bytes), environment: { APPIMAGE: image }, fetcher: async () => { invoked = true; throw Error('must not run'); } });
+  const adapter = adapterFactory()(f.context, { ...linuxDependencies(f.bytes), environment: { APPIMAGE: image, APPDIR: f.appDir }, fetcher: async () => { invoked = true; throw Error('must not run'); } });
   await assert.rejects(adapter.prepare(f.release, AbortSignal.abort(), () => {}), /installer-cancelled/); assert.equal(invoked, false);
 });
 test('a definite Linux transfer failure permits a fresh preparation', async t => {
   const f = await fixture(t, 'linux'), image = path.join(f.dir, 'PutioManager.AppImage'); await fs.writeFile(image, 'old');
   let attempts = 0;
-  const adapter = adapterFactory()(f.context, { ...linuxDependencies(f.bytes), environment: { APPIMAGE: image }, fetcher: async () => { attempts++; return new Response(f.bytes); }, rename: async () => { throw Error('private fixture diagnostic'); } });
+  const adapter = adapterFactory()(f.context, { ...linuxDependencies(f.bytes), environment: { APPIMAGE: image, APPDIR: f.appDir }, fetcher: async () => { attempts++; return new Response(f.bytes); }, rename: async () => { throw Error('private fixture diagnostic'); } });
   const prepared = await adapter.prepare(f.release, new AbortController().signal, () => {});
   await assert.rejects(adapter.handoff(prepared), error => error.message === 'installer-failed');
   assert.equal(await fs.readFile(image, 'utf8'), 'old');
@@ -83,7 +164,7 @@ test('Linux only requests its authenticated asset and rejects foreign redirects 
   for (const [response, code] of [[() => new Response('', { status: 302, headers: { location: 'https://foreign.invalid/private' } }), 'release-invalid'], [bytes => new Response(Buffer.concat([bytes, Buffer.from('overflow')])), 'download-invalid']]) {
     const f = await fixture(t, 'linux'), image = path.join(f.dir, 'PutioManager.AppImage'); await fs.writeFile(image, 'old');
     const requests = [];
-    const adapter = adapterFactory()(f.context, { ...linuxDependencies(f.bytes), environment: { APPIMAGE: image }, fetcher: async url => { requests.push(url); return response(f.bytes); } });
+    const adapter = adapterFactory()(f.context, { ...linuxDependencies(f.bytes), environment: { APPIMAGE: image, APPDIR: f.appDir }, fetcher: async url => { requests.push(url); return response(f.bytes); } });
     await assert.rejects(adapter.prepare(f.release, new AbortController().signal, () => {}), error => error.message === code);
     assert.deepEqual(requests, [f.release.asset.url]); assert.equal(await fs.readFile(image, 'utf8'), 'old');
     assert.equal(f.context.quit, undefined);
@@ -91,7 +172,7 @@ test('Linux only requests its authenticated asset and rejects foreign redirects 
 });
 test('Linux READY acknowledgement followed by waiter exit cannot replace the current image', async t => {
   const f = await fixture(t, 'linux'), image = path.join(f.dir, 'PutioManager.AppImage'); await fs.writeFile(image, 'old');
-  const adapter = adapterFactory()(f.context, { ...linuxDependencies(f.bytes), environment: { APPIMAGE: image }, spawn: () => {
+  const adapter = adapterFactory()(f.context, { ...linuxDependencies(f.bytes), environment: { APPIMAGE: image, APPDIR: f.appDir }, spawn: () => {
     const child = new EventEmitter(); child.stdout = new PassThrough(); child.kill = () => child.emit('exit', 1); child.unref = () => {};
     queueMicrotask(() => { child.stdout.write('ready\n'); child.emit('exit', 1); }); return child;
   } });
@@ -102,7 +183,7 @@ test('Linux READY acknowledgement followed by waiter exit cannot replace the cur
 test('Linux rejects changed original or staged file identities before replacement', async t => {
   for (const target of ['original', 'stage']) {
     const f = await fixture(t, 'linux'), image = path.join(f.dir, 'PutioManager.AppImage'); await fs.writeFile(image, 'old');
-    const adapter = adapterFactory()(f.context, { ...linuxDependencies(f.bytes), environment: { APPIMAGE: image } });
+    const adapter = adapterFactory()(f.context, { ...linuxDependencies(f.bytes), environment: { APPIMAGE: image, APPDIR: f.appDir } });
     const prepared = await adapter.prepare(f.release, new AbortController().signal, () => {});
     const stage = (await fs.readdir(f.dir)).find(name => name.startsWith('.putio-update-'));
     await fs.writeFile(target === 'original' ? image : path.join(f.dir, stage), 'changed fixture');
@@ -112,7 +193,7 @@ test('Linux rejects changed original or staged file identities before replacemen
 });
 test('Linux relaunch acknowledgement timeout preserves the current image', async t => {
   const f = await fixture(t, 'linux'), image = path.join(f.dir, 'PutioManager.AppImage'); await fs.writeFile(image, 'old');
-  const adapter = adapterFactory()(f.context, { ...linuxDependencies(f.bytes), environment: { APPIMAGE: image }, handoffTimeoutMs: 20, spawn: () => {
+  const adapter = adapterFactory()(f.context, { ...linuxDependencies(f.bytes), environment: { APPIMAGE: image, APPDIR: f.appDir }, handoffTimeoutMs: 20, spawn: () => {
     const child = new EventEmitter(); child.stdout = new PassThrough(); child.kill = () => child.emit('exit', 1); return child;
   } });
   const prepared = await adapter.prepare(f.release, new AbortController().signal, () => {});
@@ -122,14 +203,14 @@ test('Linux relaunch acknowledgement timeout preserves the current image', async
 test('Linux post-commit failure reports restart required and retains the complete new image', async t => {
   const f = await fixture(t, 'linux'), image = path.join(f.dir, 'PutioManager.AppImage'); await fs.writeFile(image, 'old');
   let syncs = 0;
-  const adapter = adapterFactory()(f.context, { ...linuxDependencies(f.bytes), environment: { APPIMAGE: image }, syncDirectory: async () => { if (++syncs === 2) throw Error('generated post-rename failure'); } });
+  const adapter = adapterFactory()(f.context, { ...linuxDependencies(f.bytes), environment: { APPIMAGE: image, APPDIR: f.appDir }, syncDirectory: async () => { if (++syncs === 2) throw Error('generated post-rename failure'); } });
   const prepared = await adapter.prepare(f.release, new AbortController().signal, () => {});
   await assert.rejects(adapter.handoff(prepared), error => error.message === 'restart-required');
   assert.deepEqual(await fs.readFile(image), f.bytes); assert.equal(f.context.quit, undefined);
 });
 test('Linux cancellation removes only the owned staging image', async t => {
   const f = await fixture(t, 'linux'), image = path.join(f.dir, 'PutioManager.AppImage'); await fs.writeFile(image, 'old');
-  const adapter = adapterFactory()(f.context, { ...linuxDependencies(f.bytes), environment: { APPIMAGE: image } });
+  const adapter = adapterFactory()(f.context, { ...linuxDependencies(f.bytes), environment: { APPIMAGE: image, APPDIR: f.appDir } });
   const prepared = await adapter.prepare(f.release, new AbortController().signal, () => {});
   await adapter.cancel();
   assert.equal((await fs.readdir(f.dir)).filter(name => name.startsWith('.putio-update-')).length, 0); assert.equal(await fs.readFile(image, 'utf8'), 'old');
