@@ -277,7 +277,7 @@ for (const mode of ['local','remote']) test(`${mode}: finalizing snapshot cannot
  await deadline(saveReached);assert.equal((await f.client.getSnapshot()).jobs[0].status,'finalizing');assert.equal(entered,false);
  let cancelStarted=false;const cancelAfterEntry=(async()=>{await linkReached;cancelStarted=true;await f.client.execute('cancelDownloads',[[first.jobId]])})();
  await new Promise(r=>setImmediate(r));assert.equal(cancelStarted,false);
- releaseSave();await deadline(linkReached);await new Promise(r=>setImmediate(r));assert.equal(cancelStarted,true);
+ releaseSave();await deadline(linkReached);await deadline((async()=>{while(f.recoveryIntent(first.jobId)!=='canceled')await new Promise(r=>setTimeout(r,5))})());assert.equal(cancelStarted,true);
  releaseLink();await deadline(cancelAfterEntry);const done=await terminal(f.client);
  assert.equal(done.status,'completed');assert.equal(done.id,first.jobId);assert.equal(await fs.readFile(path.join(f.root,'file.bin'),'utf8'),'data');assert.deepEqual(f.deleted,[]);assert.equal(done.cleanupStatus,'not-started');
 });
