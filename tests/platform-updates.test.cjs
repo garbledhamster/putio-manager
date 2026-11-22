@@ -20,8 +20,9 @@ test('native Mac and Linux execution guards require the exact disposable hosted 
   }
   assert.throws(() => assertHostedNativeFixture('win32', 'win32', env), /restricted/);
 });
-async function fixture(t, platform) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'native-updater-'));
+async function fixture(t, platform, temporaryParent = os.tmpdir()) {
+  // APPIMAGE/APPDIR describe resolved runtime paths, even if the test host's TMPDIR has an ancestor alias.
+  const dir = await fs.realpath(await fs.mkdtemp(path.join(temporaryParent, 'native-updater-')));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const context = { platform, arch: 'x64', currentVersion: '2.1.0', isPackaged: true, resourcesDirectory: path.join(dir, 'resources'), applicationDirectory: path.join(dir, 'PutioManager.app'), executablePath: path.join(dir, 'app'), userDataDirectory: path.join(dir, 'profile'), quitApplication() { context.quit = true; } };
   const appDir = path.join(dir, 'AppDir');
@@ -85,6 +86,19 @@ test('Linux does not accept an AppDir alias in place of the runtime mount', asyn
   assert.equal(adapter.supported, false);
   await assert.rejects(adapter.prepare(f.release, new AbortController().signal, () => {}), /unsupported-installation/);
   await assert.rejects(fs.access(f.context.userDataDirectory));
+});
+
+test('Linux positive fixture resolves an aliased host temporary parent before describing its runtime mount', async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'native-host-alias-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const actual = path.join(root, 'actual'), alias = path.join(root, 'temporary-alias');
+  await fs.mkdir(actual); await fs.symlink(actual, alias, process.platform === 'win32' ? 'junction' : 'dir');
+  const f = await fixture(t, 'linux', alias), image = path.join(f.dir, 'PutioManager.AppImage'); await fs.writeFile(image, 'old');
+  const adapter = adapterFactory()(f.context, { ...linuxDependencies(f.bytes), environment: { APPIMAGE: image, APPDIR: f.appDir } });
+  assert.equal(adapter.supported, true);
+  const prepared = await adapter.prepare(f.release, new AbortController().signal, () => {});
+  await adapter.handoff(prepared);
+  assert.deepEqual(await fs.readFile(image), f.bytes); assert.equal(f.context.quit, true);
 });
 
 test('Linux rejects environment drift before preparing without creating update state', async t => {
