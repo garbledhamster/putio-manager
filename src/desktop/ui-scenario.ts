@@ -427,7 +427,7 @@ export async function runUiScenario(window: BrowserWindow, remote: { url: string
   );
   await checkLayout("Downloads");
   await capture("downloads-default");
-  const downloadsFit = await evaluate<boolean>(`(() => {
+  const downloadsFit = `(() => {
     const table = document.querySelector('#downloads-table');
     const wrapper = table?.parentElement;
     const headers = table?.querySelectorAll('th');
@@ -438,8 +438,35 @@ export async function runUiScenario(window: BrowserWindow, remote: { url: string
       && wrapper.scrollWidth <= wrapper.clientWidth + 1
       && bounds.width > 0 && bounds.left >= 0 && bounds.right <= window.innerWidth
       && bounds.top >= 0 && bounds.bottom <= window.innerHeight;
-  })()`);
-  if (!downloadsFit) throw new Error('Downloads status or progress is clipped at the default window size.');
+  })()`;
+  try {
+    // Capturing evidence waits for a paint; ordinary CI smoke has no capture delay.
+    // Require the identical layout predicate after asynchronous resize/font work settles.
+    await waitFor(downloadsFit, "Downloads status and progress fit the default window");
+  } catch {
+    const geometry = await evaluate<Record<string, unknown>>(`(() => {
+      const table = document.querySelector('#downloads-table');
+      const wrapper = table?.parentElement;
+      const headers = table?.querySelectorAll('th');
+      const progress = table?.querySelector('progress');
+      const main = document.querySelector('main');
+      const rect = element => {
+        if (!element) return null;
+        const bounds = element.getBoundingClientRect();
+        return { left: bounds.left, top: bounds.top, right: bounds.right, bottom: bounds.bottom, width: bounds.width, height: bounds.height };
+      };
+      return {
+        viewport: { width: innerWidth, height: innerHeight, scale: devicePixelRatio },
+        fontsLoaded: document.fonts.status === 'loaded',
+        headerCount: headers?.length ?? 0,
+        statusHeadingCorrect: headers?.[4]?.textContent === 'Status',
+        wrapper: wrapper ? { clientWidth: wrapper.clientWidth, scrollWidth: wrapper.scrollWidth, bounds: rect(wrapper) } : null,
+        progress: rect(progress),
+        main: main ? { scrollTop: main.scrollTop, clientHeight: main.clientHeight, bounds: rect(main) } : null,
+      };
+    })()`);
+    throw new Error(`Downloads status or progress is clipped at the default window size. Geometry: ${JSON.stringify({ nativeSize: window.getSize(), nativeContentSize: window.getContentSize(), ...geometry })}`);
+  }
   await click("#downloads-table tbody tr");
   const originalJob = await evaluate<string>("window.putio.getState().then(s => s.jobs[0].id)");
   await waitFor("window.putio.getState().then(s => s.jobs[0].status === 'downloading' && s.jobs[0].bytesReceived > 0)", "partial download before pause");
