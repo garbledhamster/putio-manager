@@ -39,6 +39,8 @@ Every MSI payload component has a stable GUID and HKCU registry key path. The ge
 
 Burn's chain uses `Permanent="yes" Visible="yes"` so MSI owns uninstall and the temporary EXE is not intended to retain a second servicing identity. This is chain ownership, not permanent MSI file components. One-registration behavior is an acceptance test, not an assumption established by authoring alone.
 
+Native ownership checks use the Windows Installer product API for installation context, product code and version. They separately inspect both HKCU and HKLM Uninstall registry views for duplicate, hidden or stale program records. Hosted x64 and ARM64 evidence showed that a correctly installed per-user MSI can expose its program record under HKLM; the registry hive alone does not determine MSI installation context. Both lifecycle and actual update fixtures require one installed per-user MSI, the expected identity and version, no machine-context product, and one visible MSI program record without a Burn record. The actual update fixture's read-only API inspection additionally requires its generated ownership marker inside the disposable runner work directory.
+
 ## Disposable native acceptance
 
 Only the repository's GitHub-hosted Windows runner can execute:

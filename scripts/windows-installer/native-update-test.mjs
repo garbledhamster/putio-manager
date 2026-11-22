@@ -7,8 +7,8 @@ import { createRequire } from 'node:module';
 import { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { buildWindowsInstallers, getWindowsInstallerIdentity, runTool, installerToolFailureStatus } from './build.mjs';
-import { auditWindowsInstallers, auditFailureStatus } from './audit.mjs';
-import { requireDisposableWindowsRunner } from './native-fixture.mjs';
+import { auditWindowsInstallers, auditFailureStatus, ensureAuditHelper } from './audit.mjs';
+import { requireDisposableWindowsRunner, readFixtureProductCounts, hasExpectedFixtureRegistration } from './native-fixture.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
@@ -17,7 +17,7 @@ export function updateFixtureFailureStatus(stage,error) {
   const audit=auditFailureStatus(error);
   return {schema:1,updateFixtureStage:updateFixtureStages.has(stage)?stage:'initialization',code:'update-fixture-failed',...installerToolFailureStatus(error),...(audit.stage!=='initialization'?{audit}:{})};
 }
-export const WINDOWS_PRODUCT_INVENTORY_SCRIPT=String.raw`$ErrorActionPreference='Stop'; $name='Putio Manager'; $records=@(); foreach($root in @('HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall','HKCU:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall')) { if(Test-Path -LiteralPath $root) { $records+=@(Get-ChildItem -LiteralPath $root | ForEach-Object { Get-ItemProperty -LiteralPath $_.PSPath } | Where-Object { $_.DisplayName -eq $name } | ForEach-Object { [pscustomobject]@{ productCode=$_.PSChildName; version=$_.DisplayVersion; msi=$_.WindowsInstaller -eq 1 } }) } }; ConvertTo-Json -InputObject $records -Compress`;
+export const WINDOWS_PRODUCT_INVENTORY_SCRIPT=String.raw`$ErrorActionPreference='Stop'; $name='Putio Manager'; $records=@(); foreach($root in @('HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall','HKCU:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall','HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall','HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall')) { if(Test-Path -LiteralPath $root) { $records+=@(Get-ChildItem -LiteralPath $root | ForEach-Object { Get-ItemProperty -LiteralPath $_.PSPath } | Where-Object { $_.DisplayName -eq $name } | ForEach-Object { [pscustomobject]@{ productCode=$_.PSChildName; version=$_.DisplayVersion; windowsInstaller=$_.WindowsInstaller -eq 1; hidden=$_.SystemComponent -eq 1 } }) } }; ConvertTo-Json -InputObject $records -Compress`;
 const pause = milliseconds => new Promise(resolve => setTimeout(resolve,milliseconds));
 const sameGuid = (a,b) => String(a).replace(/[{}]/g,'').toUpperCase() === String(b).replace(/[{}]/g,'').toUpperCase();
 let childStage='initialization';
@@ -120,10 +120,11 @@ async function appStatus(executable) {
   if(response.ok!==true || response.value?.schema!==1 || response.value?.platform!=='windows') throw new Error('The installed application update status is invalid.');
   return response.value;
 }
-async function assertSingleProduct(identity) {
+async function assertSingleProduct(identity,helper,fixtureMarker) {
   const result=await runTool(path.join(process.env.SystemRoot,'System32','WindowsPowerShell','v1.0','powershell.exe'),['-NoProfile','-NonInteractive','-Command',WINDOWS_PRODUCT_INVENTORY_SCRIPT]);
   const records=JSON.parse(result.stdout.replace(/^\uFEFF/,''));
-  if(!Array.isArray(records) || records.length!==1 || !records[0].msi || records[0].version!==identity.version || !sameGuid(records[0].productCode,identity.productCode)) throw new Error('The actual application has duplicate or unexpected installer ownership.');
+  const counts=await readFixtureProductCounts(helper,identity,runTool,fixtureMarker);
+  if(!Array.isArray(records) || !hasExpectedFixtureRegistration(records,counts,identity)) throw new Error('The actual application has duplicate or unexpected installer ownership.');
 }
 
 export async function runNativeWindowsUpdateTest() {
@@ -148,11 +149,13 @@ export async function runNativeWindowsUpdateTest() {
   const work=await fs.mkdtemp(path.join(path.resolve(process.env.RUNNER_TEMP),'putio-native-update-'));
   confined(process.env.RUNNER_TEMP,work);
   const media=path.join(work,'generated-media');
+  const fixtureMarker=path.join(work,'native-update-ownership.json');
   const sentinel='Generated native update preservation fixture.\n';
   let installedByFixture=false,handedOff=false,verified=false,child;
   let stage='copy-actual-b';
   async function msi(args,allowExitCodes=[0]) { return await runTool(path.join(process.env.SystemRoot,'System32','msiexec.exe'),[...args,'/qn','/norestart','REBOOT=ReallySuppress'],{allowExitCodes}); }
   try {
+    await fs.writeFile(fixtureMarker,JSON.stringify({schema:1,kind:'generated-windows-native-update',currentVersion,targetVersion,productCodes:[a.productCode,b.productCode]})+'\n',{flag:'wx'});
     const appB=path.join(work,'application-b');
     await fs.cp(source,appB,{recursive:true,verbatimSymlinks:true});
     await fs.writeFile(path.join(appB,'resources/app/package.json'),JSON.stringify({...originalPackage,version:targetVersion},null,2)+'\n');
@@ -163,8 +166,9 @@ export async function runNativeWindowsUpdateTest() {
       stage=options.version===currentVersion?'audit-actual-a':'audit-actual-b';
       const audit=await auditWindowsInstallers({...options,arch}); await audit.cleanup();
     }
+    const auditHelper=await ensureAuditHelper();
     stage='install-actual-a'; await msi(['/i',builtA.msi]); installedByFixture=true;
-    stage='inventory-actual-a'; await assertSingleProduct(a);
+    stage='inventory-actual-a'; await assertSingleProduct(a,auditHelper,fixtureMarker);
     const executable=path.join(installed,'PutioManager.exe');
     stage='status-actual-a';
     if((await appStatus(executable)).currentVersion!==currentVersion) throw new Error('The actual installed A executable reports the wrong version.');
@@ -207,7 +211,7 @@ export async function runNativeWindowsUpdateTest() {
     }
     if(!relaunched||!helperExited) throw new Error('The real helper did not finish and relaunch the installed application.');
     stage='status-actual-b'; if((await appStatus(executable)).currentVersion!==targetVersion) throw new Error('The actual installed B executable reports the wrong version.');
-    stage='inventory-actual-b'; await assertSingleProduct(b);
+    stage='inventory-actual-b'; await assertSingleProduct(b,auditHelper,fixtureMarker);
     stage='preservation';
     for(const filename of [path.join(profile,'native-update-preservation.txt'),path.join(media,'generated-media.txt')]) if(await fs.readFile(filename,'utf8')!==sentinel) throw new Error('The real update changed generated profile or media.');
     verified=true;

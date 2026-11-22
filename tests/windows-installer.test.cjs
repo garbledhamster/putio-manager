@@ -169,8 +169,25 @@ test('actual updater fixture preserves PowerShell registry separators and saniti
   const {WINDOWS_PRODUCT_INVENTORY_SCRIPT,updateFixtureFailureStatus}=await import('../scripts/windows-installer/native-update-test.mjs');
   assert.ok(WINDOWS_PRODUCT_INVENTORY_SCRIPT.includes(String.raw`HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall`));
   assert.ok(WINDOWS_PRODUCT_INVENTORY_SCRIPT.includes(String.raw`HKCU:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall`));
+  assert.ok(WINDOWS_PRODUCT_INVENTORY_SCRIPT.includes(String.raw`HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall`));
+  assert.ok(WINDOWS_PRODUCT_INVENTORY_SCRIPT.includes(String.raw`HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall`));
   assert.deepEqual(updateFixtureFailureStatus('controller-child',Error('generated-private')),{schema:1,updateFixtureStage:'controller-child',code:'update-fixture-failed'});
   assert.deepEqual(updateFixtureFailureStatus('generated-private',Error('generated-private')),{schema:1,updateFixtureStage:'initialization',code:'update-fixture-failed'});
+});
+
+test('per-user MSI ownership uses native context independently of its ARP registry location', async () => {
+  const {hasExpectedFixtureRegistration}=await import('../scripts/windows-installer/native-fixture.mjs');
+  const identity={productCode:'GENERATED',version:'1.0.0'};
+  const records=[{productCode:'{GENERATED}',version:'1.0.0',windowsInstaller:true,hidden:false,arpMachine:true}];
+  const counts={total:1,installed:1,perUser:1,machine:0,expectedProduct:1,expectedVersion:1};
+  assert.equal(hasExpectedFixtureRegistration(records,counts,identity),true);
+  for(const [key,value] of Object.entries({total:2,installed:0,perUser:0,machine:1,expectedProduct:0,expectedVersion:0})) assert.equal(hasExpectedFixtureRegistration(records,{...counts,[key]:value},identity),false);
+  assert.equal(hasExpectedFixtureRegistration([...records,{windowsInstaller:false}],counts,identity),false);
+  assert.equal(hasExpectedFixtureRegistration([{...records[0],hidden:true}],counts,identity),false);
+  assert.equal(hasExpectedFixtureRegistration([{...records[0],hidden:undefined}],counts,identity),false);
+  assert.equal(hasExpectedFixtureRegistration([{...records[0],version:'0.9.0'}],counts,identity),false);
+  const powershell=await fs.readFile(path.resolve(__dirname,'../scripts/windows-installer/fixture-inventory.ps1'),'utf8');
+  for(const hive of ['HKCU','HKLM']) for(const view of ['','WOW6432Node\\']) assert.ok(powershell.includes(`${hive}:\\Software\\${view}Microsoft\\Windows\\CurrentVersion\\Uninstall`));
 });
 
 test('native MSI registration diagnostics launch the managed helper through dotnet', async () => {
@@ -182,6 +199,11 @@ test('native MSI registration diagnostics launch the managed helper through dotn
     return {stdout:JSON.stringify({total:1,installed:1,perUser:1,machine:0,expectedProduct:1,expectedVersion:1,private:'generated-private'})};
   });
   assert.deepEqual(counts,{total:1,installed:1,perUser:1,machine:0,expectedProduct:1,expectedVersion:1});
+  await readFixtureProductCounts('generated-helper.dll',{...identity,productName:'Putio Manager'},async(command,args)=>{
+    assert.equal(command,'dotnet');
+    assert.equal(args.at(-1),'generated-marker/native-update-ownership.json');
+    return {stdout:'{}'};
+  },'generated-marker/native-update-ownership.json');
 });
 
 test('audit failures expose only allowlisted stages, invariant codes and compiler/API codes', async () => {

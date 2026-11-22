@@ -7,11 +7,26 @@ using WixToolset.Dtf.WindowsInstaller.Package;
 
 // This program reads MSI tables/cabinets. It never opens an installation session,
 // executes a sequence, invokes msiexec, or runs a package custom action.
-if (args.Length == 4 && args[0] == "--fixture-products")
+if ((args.Length == 4 || args.Length == 5) && args[0] == "--fixture-products")
 {
     try
     {
-        if (Environment.GetEnvironmentVariable("GITHUB_ACTIONS") != "true" || Environment.GetEnvironmentVariable("RUNNER_ENVIRONMENT") != "github-hosted" || Environment.GetEnvironmentVariable("GITHUB_REPOSITORY") != "garbledhamster/putio-manager" || !System.Text.RegularExpressions.Regex.IsMatch(args[1],"^Putio Manager Fixture [a-f0-9]{12}$") || !Guid.TryParse(args[2],out var expectedProduct) || !Version.TryParse(args[3],out var expectedVersion)) throw new InvalidDataException();
+        if (Environment.GetEnvironmentVariable("GITHUB_ACTIONS") != "true" || Environment.GetEnvironmentVariable("RUNNER_ENVIRONMENT") != "github-hosted" || Environment.GetEnvironmentVariable("GITHUB_REPOSITORY") != "garbledhamster/putio-manager" || !System.Text.RegularExpressions.Regex.IsMatch(args[1],"^Putio Manager(?: Fixture [a-f0-9]{12})?$") || !Guid.TryParse(args[2],out var expectedProduct) || !Version.TryParse(args[3],out var expectedVersion)) throw new InvalidDataException();
+        if (args[1]=="Putio Manager")
+        {
+            if (args.Length!=5 || String.IsNullOrEmpty(Environment.GetEnvironmentVariable("RUNNER_TEMP"))) throw new InvalidDataException();
+            var runnerRoot=Path.TrimEndingDirectorySeparator(Path.GetFullPath(Environment.GetEnvironmentVariable("RUNNER_TEMP")!));
+            var markerPath=Path.GetFullPath(args[4]);
+            var relative=Path.GetRelativePath(runnerRoot,markerPath);
+            if (Path.IsPathRooted(relative) || relative==".." || relative.StartsWith(".."+Path.DirectorySeparatorChar) || Path.GetFileName(markerPath)!="native-update-ownership.json") throw new InvalidDataException();
+            for (var current=markerPath;!String.Equals(current,runnerRoot,StringComparison.OrdinalIgnoreCase);current=Path.GetDirectoryName(current)!)
+                if (String.IsNullOrEmpty(current) || (File.GetAttributes(current)&FileAttributes.ReparsePoint)!=0) throw new InvalidDataException();
+            if (new FileInfo(markerPath).Length>4096) throw new InvalidDataException();
+            using var marker=JsonDocument.Parse(File.ReadAllText(markerPath));
+            var root=marker.RootElement;
+            if (root.GetProperty("schema").GetInt32()!=1 || root.GetProperty("kind").GetString()!="generated-windows-native-update" || !(root.GetProperty("currentVersion").GetString()==args[3] || root.GetProperty("targetVersion").GetString()==args[3]) || !root.GetProperty("productCodes").EnumerateArray().Any(value=>Guid.TryParse(value.GetString(),out var code)&&code==expectedProduct)) throw new InvalidDataException();
+        }
+        else if (args.Length!=4) throw new InvalidDataException();
         // MsiEnumProductsEx uses the current user, never all users. Registry ARP
         // paths alone do not establish Windows Installer product registration.
         var products=ProductInstallation.GetProducts(null,null,UserContexts.All).Where(product=>product.AdvertisedProductName==args[1]).ToArray();

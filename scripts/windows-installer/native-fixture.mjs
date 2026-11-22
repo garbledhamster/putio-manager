@@ -27,11 +27,14 @@ export function summarizeFixtureRegistration(records,identity) {
 export function summarizeFixtureBurnLog(content) {
   return {packagePlanned:/Planned package: ApplicationMsi,/.test(content),plannedInstall:/Planned package: ApplicationMsi,[^\r\n]*execute: Install(?:,|\s|$)/.test(content),executedInstall:/Applying execute package: ApplicationMsi, action: Install(?:,|\s|$)/.test(content),executionSucceeded:/Applied execute package: ApplicationMsi, result: 0x0+(?:,|\s|$)/.test(content)};
 }
-export async function readFixtureProductCounts(helper,identity,runner=runTool) {
-  const result=await runner('dotnet',[helper,'--fixture-products',identity.productName,identity.productCode,identity.version]);
+export async function readFixtureProductCounts(helper,identity,runner=runTool,fixtureMarker) {
+  const result=await runner('dotnet',[helper,'--fixture-products',identity.productName,identity.productCode,identity.version,...(fixtureMarker?[fixtureMarker]:[])]);
   const products=JSON.parse(result.stdout),counts={};
   for(const key of ['total','installed','perUser','machine','expectedProduct','expectedVersion']) if(Number.isSafeInteger(products?.[key])&&products[key]>=0)counts[key]=products[key];
   return counts;
+}
+export function hasExpectedFixtureRegistration(records,counts,identity) {
+  return records.length===1 && records[0].windowsInstaller===true && records[0].hidden===false && sameGuid(records[0].productCode,identity.productCode) && records[0].version===identity.version && counts.total===1 && counts.installed===1 && counts.perUser===1 && counts.machine===0 && counts.expectedProduct===1 && counts.expectedVersion===1;
 }
 export function requireDisposableWindowsRunner(env = process.env,platform = process.platform) {
   if (platform !== 'win32' || env.GITHUB_ACTIONS !== 'true' || env.RUNNER_ENVIRONMENT !== 'github-hosted' || env.GITHUB_REPOSITORY !== 'garbledhamster/putio-manager' || !env.RUNNER_TEMP || !env.LOCALAPPDATA || !env.APPDATA) throw new Error('Native installer execution is restricted to disposable hosted repository CI.');
@@ -68,10 +71,10 @@ export async function runNativeInstallerFixture() {
   }
   async function assertInstalled(identity) {
     const {records,owner,machineRecords} = await inventory();
-    if (records.length !== 1 || !records[0].windowsInstaller || records[0].hidden || !sameGuid(records[0].productCode,identity.productCode) || records[0].version !== identity.version) {
+    const api=await readFixtureProductCounts(auditHelper,identity);
+    if (!hasExpectedFixtureRegistration(records,api,identity)) {
       console.error(JSON.stringify({schema:1,registration:summarizeFixtureRegistration(records,identity)}));
       console.error(JSON.stringify({schema:1,installation:{ownerPresent:!!owner,executablePresent:await fs.access(path.join(installed,'PutioManager.exe')).then(()=>true,()=>false),machineRecords:Number.isSafeInteger(machineRecords)&&machineRecords>=0?machineRecords:0},burn:summarizeFixtureBurnLog(await fs.readFile(burnLog,'utf8').catch(()=>''))}));
-      const api=await readFixtureProductCounts(auditHelper,identity).catch(()=>({}));
       console.error(JSON.stringify({schema:1,msiApi:api}));
       throw new Error('Fixture has duplicate, stale Burn, or incorrect MSI registration.');
     }
@@ -90,6 +93,7 @@ export async function runNativeInstallerFixture() {
     registered = false;
     const {records,owner} = await inventory();
     if (records.length !== 0 || owner?.version || owner?.productCode) throw new Error('Fixture uninstall left an installer registration.');
+    if ((await readFixtureProductCounts(auditHelper,identity)).total!==0) throw new Error('Fixture uninstall left an installer registration.');
     try { await fs.access(path.join(installed,'PutioManager.exe')); throw new Error('Fixture uninstall left application executable.'); } catch(error) { if (error.code !== 'ENOENT') throw error; }
     await assertPreserved();
   }
