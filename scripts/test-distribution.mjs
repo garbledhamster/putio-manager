@@ -47,9 +47,9 @@ try {
       : [cli, name, '--config', configFile], { encoding: 'utf8', timeout: 20000, stdio: ['ignore', 'pipe', 'pipe'] }));
   const initial = command('status', true);
   assert.equal(initial.ok, true);
-  assert.equal(initial.value.engine.protocolVersion, 2);
-  assert.equal(initial.value.hasToken, false);
-  assert.equal(initial.value.jobs.length, 0);
+  assert.equal(initial.value.accountConnected, false);
+  assert.equal(initial.value.counts.jobs, 0);
+  assert.equal('engine' in initial.value, false);
   command('pause');
   assert.equal(command('status').value.paused, true);
   command('resume');

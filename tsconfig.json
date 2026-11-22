@@ -17,6 +17,7 @@
     "src/engine/**/*.ts",
     "src/remote/**/*.ts",
     "src/server/**/*.ts",
+    "src/messages/**/*.ts",
     "src/desktop/**/*.ts",
     "src/shared.ts"
   ]

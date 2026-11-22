@@ -9,6 +9,7 @@ import { CredentialAdapter, SettingsStore, validSchedule } from "../core/setting
 import { AutoDownloadRule, DownloadJob, RemoteFile, Settings } from "../shared";
 import { EngineClient, EngineCommand, EngineSnapshot } from "./contracts";
 import { acquireStateLock } from "./state-lock";
+import { storageStatus } from "./storage";
 
 export interface QuiescentEngineOwner { close(): Promise<void> }
 export class EngineStartupFailure extends Error {
@@ -607,6 +608,15 @@ export class ApplicationEngine implements EngineClient {
     this.ensureOpen();
     const [a, b] = args;
     switch (command) {
+      case "storageStatus": {
+        if (args.length) throw new Error("Invalid command arguments.");
+        const locations: { id: string; kind: "download" | "staging"; path: string }[] = this.roots.length
+          ? this.roots.map(root => ({ id: root.id, kind: "download", path: root.path }))
+          : this.store.settings.downloadDirectory ? [{ id: "local-download", kind: "download", path: this.store.settings.downloadDirectory }] : [];
+        const staging = this.stagingRoot || this.store.settings.stagingDirectory;
+        if (staging) locations.push({ id: "staging", kind: "staging", path: staging });
+        return storageStatus(locations);
+      }
       case "listFiles": return this.api.listFiles(id(a));
       case "moveFile": return this.api.moveFile(id(a), id(b));
       case "renameFile": return this.api.renameFile(id(a), name(b));

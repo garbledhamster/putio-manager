@@ -6,6 +6,9 @@ import { RemoteEngine } from "../remote/client";
 import { startRemoteServer } from "./server";
 import { createEngine, EngineStartupFailure, QuiescentEngineOwner } from "../engine/engine";
 import { CredentialAdapter } from "../core/settings";
+import { runAgentCommand, safeAgentError } from "./agent-cli";
+import { readSettingsInput } from "./cli-input";
+import { runServiceCommand } from "./service-cli";
 
 let failedStartupOwner: QuiescentEngineOwner | undefined;
 type Config = { host: string; port: number; stateDirectory: string; roots: {id:string;label:string;path:string}[]; clientTokenFile: string; credentialKeyFile: string; putioTokenFile?: string; label?: string; stagingDirectory?: string };
@@ -43,11 +46,28 @@ function credentialAdapter(keyFile: string): CredentialAdapter {
   };
 }
 async function main() {
-  const args = process.argv.slice(2); const command = args.shift();
+  const args = process.argv.slice(2);
   let configFile = process.env.PUTIO_MANAGER_CONFIG;
-  if (args.length === 2 && args[0] === "--config") configFile = args[1]; else if (args.length) throw new Error("Usage: server <setup|serve|status|pause|resume|auth> [--config absolute-path]");
+  const configIndex = args.indexOf("--config");
+  if (configIndex >= 0) {
+    if (!args[configIndex + 1] || args.filter(arg => arg === "--config").length !== 1) throw new Error("Invalid server configuration.");
+    configFile = args[configIndex + 1]; args.splice(configIndex, 2);
+  }
+  const agentOnly = args[0] === "agent";
+  if (agentOnly) args.shift();
+  const command = args[0] || "help";
+  if (agentOnly && ["setup", "serve", "auth"].includes(command)) throw new Error("Invalid command arguments.");
+  if (command === "service") { process.exitCode = await runServiceCommand(args.slice(1), line => process.stdout.write(line)); return; }
+  if (["help", "--help", "-h"].includes(command)) {
+    const unused = { getSnapshot: async () => { throw new Error(); }, execute: async () => { throw new Error(); }, subscribe: () => () => {}, close: async () => {} };
+    process.exitCode = await runAgentCommand(unused, args.length ? args : ["help"], line => {
+      const output = JSON.parse(line); if (output.ok) output.value.serviceHelp = "On the Linux service host, run service help for service lifecycle commands.";
+      process.stdout.write(JSON.stringify(output) + "\n");
+    }); return;
+  }
+  if (["setup", "serve", "auth"].includes(command) && args.length !== 1) throw new Error("Invalid command arguments.");
   if (command === "setup" && configFile) { await interactiveSetup(configFile); return; }
-  if (!configFile || !["serve", "status", "pause", "resume", "auth"].includes(command || "")) throw new Error("Usage: server <setup|serve|status|pause|resume|auth> [--config absolute-path]");
+  if (!configFile) throw new Error("Invalid server configuration.");
   const c = readConfig(configFile); const clientToken = readSecret(c.clientTokenFile);
   if (command === "serve") {
     let engine: Awaited<ReturnType<typeof createEngine>>;
@@ -66,10 +86,12 @@ async function main() {
     const host = c.host === "::1" ? "[::1]" : c.host;
     const client = new RemoteEngine({ url: `http://${host}:${c.port}`, token: clientToken });
     try {
-      const result = command === "status" ? await client.getSnapshot() : await client.execute(command === "auth" ? "beginAccountLink" : command as "pause" | "resume");
-      if (command === "auth") { const link = result as {url?: unknown; expiresAt?: unknown}; if (typeof link?.url !== "string") throw new Error("Account link unavailable."); process.stdout.write(`Open this link to authorize the account: ${link.url}\n`); }
-      else process.stdout.write(JSON.stringify({ ok: true, value: result }) + "\n");
+      if (command === "auth") {
+        const link = await client.execute("beginAccountLink") as {url?: unknown; expiresAt?: unknown};
+        if (typeof link?.url !== "string") throw new Error("Account link unavailable.");
+        process.stdout.write(`Open this link to authorize the account: ${link.url}\n`);
+      } else process.exitCode = await runAgentCommand(client, args, line => process.stdout.write(line), await readSettingsInput(args));
     } finally { await client.close(); }
   }
 }
-void main().catch(error => { if (error instanceof EngineStartupFailure) { process.stderr.write("Engine startup could not safely close a file; state ownership remains held until process exit.\n"); process.exitCode = 1; return; } process.stderr.write(process.argv[2] === "setup" ? "Setup failed. Use a new private configuration directory, an existing absolute download directory and a valid port; check permissions.\n" : "Operation failed. Check configuration, credential permissions and server availability.\n"); process.exitCode = 1; });
+void main().catch(error => { process.stderr.write(JSON.stringify({ ok: false, error: safeAgentError(error) }) + "\n"); process.exitCode = 1; });

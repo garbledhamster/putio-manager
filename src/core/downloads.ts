@@ -1090,6 +1090,9 @@ export class DownloadQueue {
           ? "Source changed; retry to accept the refreshed source."
           : error.code === "EEXIST"
           ? (delivery?.phase === "downloading-stage" ? "Staging artifact already exists with unknown ownership." : delivery?.phase === "copying" ? "Destination partial already exists with unknown ownership." : "Destination already exists.")
+          : error.code === "ENOSPC" ? "The download disk is full."
+          : error.code === "EACCES" || error.code === "EPERM" ? "Download folder access was denied."
+          : error.code === "EIO" ? "The download disk could not read or write data."
           : "Download failed.";
     } finally {
       if (reservation) await reservation.release(job.id);

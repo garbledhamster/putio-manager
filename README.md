@@ -4,7 +4,7 @@ Browse your put.io account, copy files to your computer or a Linux download serv
 
 The desktop app runs on Windows, macOS and Linux. A separate headless engine can keep downloading on a server after you quit the desktop app. You can download to the destination directly or use an optional staging area on the engine host before copying to the destination. Source cleanup requires verified delivery and the job's saved cleanup choices.
 
-**Start here:** [Download](#download) · [Screenshot guide](#screenshot-guide) · [Desktop setup](#desktop-setup) · [Linux remote server](#linux-remote-server) · [Everyday use](#everyday-use) · [Staging](#optional-staging-before-delivery) · [Jellyfin](#connect-a-jellyfin-library) · [Troubleshooting](#troubleshooting)
+**Start here:** [Download](#download) · [Screenshot guide](#screenshot-guide) · [Desktop setup](#desktop-setup) · [Linux remote server](#linux-remote-server) · [CLI and safe analytics](#cli-and-safe-analytics) · [Everyday use](#everyday-use) · [Staging](#optional-staging-before-delivery) · [Jellyfin](#connect-a-jellyfin-library) · [Troubleshooting](#troubleshooting)
 
 ## Download
 
@@ -12,11 +12,11 @@ Choose your operating system and processor. Each archive contains the desktop ap
 
 | Platform | Most Intel / AMD computers | ARM computers |
 | --- | --- | --- |
-| Windows | [Windows x64 ZIP](https://github.com/garbledhamster/putio-manager/releases/download/v2.0.1/PutioManager-2.0.1-windows-x64.zip) | [Windows ARM64 ZIP](https://github.com/garbledhamster/putio-manager/releases/download/v2.0.1/PutioManager-2.0.1-windows-arm64.zip) |
-| macOS | [Intel Mac archive](https://github.com/garbledhamster/putio-manager/releases/download/v2.0.1/PutioManager-2.0.1-macos-x64.tar.gz) | [Apple silicon archive](https://github.com/garbledhamster/putio-manager/releases/download/v2.0.1/PutioManager-2.0.1-macos-arm64.tar.gz) |
-| Linux | [Linux x64 archive](https://github.com/garbledhamster/putio-manager/releases/download/v2.0.1/PutioManager-2.0.1-linux-x64.tar.gz) | [Linux ARM64 archive](https://github.com/garbledhamster/putio-manager/releases/download/v2.0.1/PutioManager-2.0.1-linux-arm64.tar.gz) |
+| Windows | [Windows x64 ZIP](https://github.com/garbledhamster/putio-manager/releases/download/v2.1.0/PutioManager-2.1.0-windows-x64.zip) | [Windows ARM64 ZIP](https://github.com/garbledhamster/putio-manager/releases/download/v2.1.0/PutioManager-2.1.0-windows-arm64.zip) |
+| macOS | [Intel Mac archive](https://github.com/garbledhamster/putio-manager/releases/download/v2.1.0/PutioManager-2.1.0-macos-x64.tar.gz) | [Apple silicon archive](https://github.com/garbledhamster/putio-manager/releases/download/v2.1.0/PutioManager-2.1.0-macos-arm64.tar.gz) |
+| Linux | [Linux x64 archive](https://github.com/garbledhamster/putio-manager/releases/download/v2.1.0/PutioManager-2.1.0-linux-x64.tar.gz) | [Linux ARM64 archive](https://github.com/garbledhamster/putio-manager/releases/download/v2.1.0/PutioManager-2.1.0-linux-arm64.tar.gz) |
 
-[Release notes and all files](https://github.com/garbledhamster/putio-manager/releases/tag/v2.0.1) · [SHA-256 checksums](https://github.com/garbledhamster/putio-manager/releases/download/v2.0.1/SHA256SUMS.txt)
+[Release notes and all files](https://github.com/garbledhamster/putio-manager/releases/tag/v2.1.0) · [SHA-256 checksums](https://github.com/garbledhamster/putio-manager/releases/download/v2.1.0/SHA256SUMS.txt)
 
 These are **unsigned portable distributions**, not signed installers. The operating system may block an unsigned app. Follow your organization's policy; do not disable security software to run it. macOS signing and notarization and Windows code signing are not included. The release's CI results describe which native builds and isolated checks passed; they do not establish playback or compatibility with every computer.
 
@@ -28,13 +28,13 @@ To find your processor: Windows **Settings → System → About → System type*
 Download `SHA256SUMS.txt` from the same release. In PowerShell:
 
 ```powershell
-Get-FileHash .\PutioManager-2.0.1-windows-x64.zip -Algorithm SHA256
+Get-FileHash .\PutioManager-2.1.0-windows-x64.zip -Algorithm SHA256
 ```
 
 On macOS:
 
 ```sh
-shasum -a 256 PutioManager-2.0.1-macos-arm64.tar.gz
+shasum -a 256 PutioManager-2.1.0-macos-arm64.tar.gz
 ```
 
 On Linux, with the checksums and archive in the same directory:
@@ -125,7 +125,7 @@ Download destinations, staging, limits, rules and account authorization belong t
 2. Click **Connect with put.io**. Sign in to put.io in the browser and approve the connection. Return to the app and wait for the put.io indicator to show **Connected**.
 3. Account authorization belongs to the selected engine. Reconnect with the same control if authorization expires. The app uses operating-system secure storage when available; if the screen says the connection lasts only until the engine stops, reconnect after restarting or configure a supported secure-storage backend.
 4. Open **Settings → Downloads**. In Local mode click **Browse**, choose an existing destination, and click **Save settings**. In Remote mode select an allowed **Download root** and click **Use root**.
-5. For the first download, select **Don't delete files from Put.io**. Leave **Delete source folders when only excluded files remain** and **Download locally before copying to destination** unchecked. Save settings. You can configure [staging](#optional-staging-before-delivery) after the first direct download works.
+5. For the first download, select **Don't delete files from Put.io**. Leave **Delete source folders when only excluded files remain** and **Use temporary storage before copying to the download folder** unchecked. Save settings. You can configure [staging](#optional-staging-before-delivery) after the first direct download works.
 6. **Settings → Setup** links back to the account and destination controls whenever you need to revisit them.
 
 The optional manual-token disclosure is an advanced alternative to browser linking. Enter only a token you obtained for your own account. Never paste a token into an issue, screenshot, command argument or shared log.
@@ -150,13 +150,13 @@ The server needs outbound HTTPS to put.io, sufficient disk space, a supported Li
 Download the matching **Linux** archive and `SHA256SUMS.txt` from the release. Verify its hash, then extract the archive on the server. For x64:
 
 ```sh
-tar -xzf PutioManager-2.0.1-linux-x64.tar.gz
+tar -xzf PutioManager-2.1.0-linux-x64.tar.gz
 sudo install -d -m 0755 /opt/putio-manager
-sudo mv PutioManager-linux-x64-distribution /opt/putio-manager/2.0.1
-sudo chown -R root:root /opt/putio-manager/2.0.1
+sudo mv PutioManager-linux-x64-distribution /opt/putio-manager/2.1.0
+sudo chown -R root:root /opt/putio-manager/2.1.0
 ```
 
-For ARM64 use the ARM64 archive and extracted folder name. `/opt/putio-manager/2.0.1` must be unused before this move. Keeping program files root-owned prevents the download service from rewriting its executable.
+For ARM64 use the ARM64 archive and extracted folder name. `/opt/putio-manager/2.1.0` must be unused before this move. Keeping program files root-owned prevents the download service from rewriting its executable.
 
 Create the service identity and writable data locations once:
 
@@ -172,7 +172,7 @@ If the account already exists, inspect it and reuse it only if it is the intende
 Run this in an **interactive server terminal**:
 
 ```sh
-sudo -u putio /opt/putio-manager/2.0.1/launch --mode headless setup --config /var/lib/putio-manager/private/config.json
+sudo -u putio /opt/putio-manager/2.1.0/launch --mode headless setup --config /var/lib/putio-manager/private/config.json
 ```
 
 At the prompts enter:
@@ -201,8 +201,8 @@ RequiresMountsFor=/srv/putio-downloads /var/lib/putio-manager
 Type=simple
 User=putio
 Group=putio
-WorkingDirectory=/opt/putio-manager/2.0.1
-ExecStart=/opt/putio-manager/2.0.1/node /opt/putio-manager/2.0.1/headless/server/cli.js serve --config /var/lib/putio-manager/private/config.json
+WorkingDirectory=/opt/putio-manager/2.1.0
+ExecStart=/opt/putio-manager/2.1.0/node /opt/putio-manager/2.1.0/headless/server/cli.js serve --config /var/lib/putio-manager/private/config.json
 Restart=on-failure
 RestartSec=5
 TimeoutStopSec=60
@@ -231,17 +231,17 @@ sudo journalctl -u putio-manager.service -n 30 --no-pager
 Look for **Server ready** in the service log. Check its authenticated status locally:
 
 ```sh
-sudo -u putio /opt/putio-manager/2.0.1/launch --mode headless status --config /var/lib/putio-manager/private/config.json
+sudo -u putio /opt/putio-manager/2.1.0/launch --mode headless status --config /var/lib/putio-manager/private/config.json
 ```
 
-Status can include private filenames and paths. Inspect it locally; do not post the complete output publicly. An active systemd process alone does not prove the account is connected or a download finished.
+Status uses the safe operational format described under [CLI and safe analytics](#cli-and-safe-analytics). It excludes filenames, paths and credentials. Counts and byte totals still describe private activity. An active systemd process alone does not prove the account is connected or a download finished.
 
 ### 4. Authorize put.io on the server
 
 With the service running, use another interactive server terminal:
 
 ```sh
-sudo -u putio /opt/putio-manager/2.0.1/launch --mode headless auth --config /var/lib/putio-manager/private/config.json
+sudo -u putio /opt/putio-manager/2.1.0/launch --mode headless auth --config /var/lib/putio-manager/private/config.json
 ```
 
 Open the displayed **put.io** authorization link in your browser and approve the connection. That link is temporary and private; do not capture it in documentation or logs. Then check status again. You can also connect the desktop to the Remote engine and use **Connect with put.io** there; the account is still saved on the server.
@@ -389,9 +389,9 @@ put.io → private staging area on the engine host → destination copy → veri
 Use it when you want the network download to land on engine-local storage before the engine copies it to another destination. It needs room for retained staged bytes and the destination copy. It does not copy Remote downloads onto your desktop.
 
 1. Choose an existing, private **engine-local** staging directory outside your media library. Use a local filesystem with the file and hard-link operations the app requires; Windows UNC shares are rejected for staging. Keep other users and applications out of this working area. On Windows, protect the chosen directory with its filesystem ACL; downloaded staging bytes are not an encrypted archive.
-2. In **Settings → Downloads**, review **Engine staging directory**. In Local mode use its **Browse** control. In Remote mode an administrator must [configure the server path](#optional-staging-on-the-linux-server); the desktop cannot replace that path.
+2. In **Settings → Downloads**, review **Temporary folder on the download host**. In Local mode use its **Browse** control. In Remote mode an administrator must [configure the server path](#optional-staging-on-the-linux-server); the desktop cannot replace that path.
 3. Set **Staging budget (GiB)** and **Free-space reserve (GiB)**. Defaults are **20 GiB** for retained staging data and **10 GiB** of free-space reserve. The budget must be positive; the reserve can be zero. Leave enough real space on both staging and destination volumes. The engine checks reservations and can stop with a capacity message rather than overfill the available space.
-4. Check **Download locally before copying to destination** and click **Save settings**. “Locally” means the selected engine host. Confirm the selected Local/Remote indicator and path before queuing a job.
+4. Check **Use temporary storage before copying to the download folder** and click **Save settings**. “Locally” means the selected engine host. Confirm the selected Local/Remote indicator and path before queuing a job.
 5. Start a new small download with source deletion off. Follow **Downloads** through network transfer, **Copying**, **Verifying destination** and its final status. Check the destination file before enabling cleanup.
 
 New jobs save their staging choice, directory and limits. Turning staging on or off does not convert existing queued jobs. A tighter current budget or higher reserve also constrains saved staged jobs; relaxing a setting does not remove a stricter limit already saved for a job. Paused, failed or needs-attention jobs can retain staged bytes and consume the budget. Keep their state and partials while investigating. Do not delete the hidden engine namespace or its anchor files as a space-recovery shortcut.
@@ -517,3 +517,93 @@ npm run package:distribution
 `verify` checks type/build, disposable service/integration fixtures and the actual Electron renderer scenario. `test:package` runs the same isolated scenario through the native package. Package each platform/architecture on its matching native runner. These tests use generated data and do not need a real put.io account. Screenshot generation uses the same synthetic fixture with `--smoke-test --evidence-dir=ABSOLUTE_OUTPUT_DIRECTORY`; use a generic isolated temporary root so private usernames never enter screenshots.
 
 Putio Manager is licensed under **GPL-3.0-only**; see [LICENSE](LICENSE). It builds on the original put.io Download Manager by **Gunhan Ozden**. Bundled Heroicons use the MIT license; their notices and asset provenance are retained. Distributions include the applicable application, Electron/Chromium and Node notices. This is an independent application, not an official put.io or Jellyfin product.
+
+## CLI and safe analytics
+
+Agents use the CLI for all administration. The desktop GUI remains available for people. CLI status output contains an explicit allowlist of operational fields. It excludes filenames, folder paths, account and process identifiers, usernames, process command names, server labels and addresses, credentials, authorization links, raw error messages and exact event timestamps. The CLI does not open media contents or browse the put.io file tree.
+
+Anonymous job and root references come from opaque internal IDs. They remain useful for selecting an operation without disclosing a name. Counts, byte totals and progress are still operational metadata; keep exported reports private unless you choose to share them.
+
+### Use the desktop's saved Remote connection
+
+After a person has configured a Remote connection, open a terminal in the extracted distribution folder. On Windows:
+
+```powershell
+.\launch.cmd --mode agent help
+.\launch.cmd --mode agent status
+.\launch.cmd --mode agent analytics
+.\launch.cmd --mode agent downloads
+.\launch.cmd --mode agent storage
+.\launch.cmd --mode agent settings
+```
+
+On macOS use `./launch --mode agent` followed by the same command. This mode uses the existing operating-system protected Remote credential internally. It creates no window, makes no new Local engine, and never falls back to Local when Remote is unavailable. It refuses a saved Local profile. It needs the existing SSH tunnel or private connection to remain available. Agents do not extract credentials to call the server directly.
+
+On Linux, a server without a display should use the headless CLI below. Desktop agent mode uses the installed desktop runtime and operating-system secure storage; it is not a replacement for headless service mode.
+
+### Use the headless CLI on the Linux server
+
+In the fictional server layout used above, run commands as the dedicated service identity:
+
+```sh
+sudo -u putio /opt/putio-manager/2.1.0/launch --mode headless agent help
+sudo -u putio /opt/putio-manager/2.1.0/launch --mode headless agent status --config /var/lib/putio-manager/private/config.json
+sudo -u putio /opt/putio-manager/2.1.0/launch --mode headless agent analytics --config /var/lib/putio-manager/private/config.json
+sudo -u putio /opt/putio-manager/2.1.0/launch --mode headless agent storage --config /var/lib/putio-manager/private/config.json
+```
+
+Use your own installed version directory. `PUTIO_MANAGER_CONFIG` can supply the private config path instead of `--config`. The application reads its client credential internally. No token command argument is accepted. Normal `status`, `pause` and `resume` also use the safe status format. The explicit `agent` interface rejects human-only `setup`, `serve` and `auth` commands. Human account linking remains a separate interactive action.
+
+Commands return one JSON object and an exit code. Zero means the requested command succeeded; a nonzero code includes a controlled error category and a next action. Do not treat an unavailable storage measurement as zero free bytes: it returns `null` with an unavailable status.
+
+| Command | Safe result or action |
+| --- | --- |
+| `status` | Selected host, pause/account state and aggregate counts. |
+| `analytics` | Counts by job state, delivery step, cleanup state and error category; aggregate bytes and current transfer speed. |
+| `downloads` | Anonymous job references, progress, verification/cleanup state and controlled next actions. |
+| `storage` | Anonymous volume references and capacity/free-space measurements from filesystem metadata only. |
+| `settings` | Safe numeric/boolean download settings; no paths or credentials. |
+| `roots` | Anonymous references for configured download roots. |
+| `retry job_REF` | Retry one current eligible job through the existing engine guards. |
+| `cleanup job_REF` | Request guarded temporary-copy cleanup for a published job with a staging warning. |
+| `cancel job_REF` | Request cancellation of one job; the engine decides which owned temporary files it can safely remove. |
+| `pause` / `resume` | Pause or resume the selected server's jobs and scans. |
+| `check-rules` | Request a rule check on the selected server. |
+| `root-select root_REF` | Select one allowed download root by its current anonymous reference. |
+| `settings-set --json` | Apply only supported numeric/boolean settings supplied through stdin. |
+
+Copy a complete `job_…` or `root_…` reference from the current output; `job_REF` and `root_REF` above are placeholders. Retry eligibility is not a promise of success. The engine still validates recovery state, source changes, file identity and destination verification. Cleanup does not remove the completed destination or manually delete a put.io source. Unknown or unsafe ownership remains blocked. A successful command response includes the updated safe job status; read it before claiming recovery completed.
+
+Historical speed values do not contribute to current throughput. `deliveryVerified` requires a completed job, recorded verification and no job error. `recordedVerification` preserves the engine's earlier evidence separately; it does not make a job needing attention a verified delivery.
+
+For direct downloads on the server, turn temporary staging off for **new jobs** through stdin:
+
+```sh
+printf '%s\n' '{"stageDownloads":false}' | sudo -u putio /opt/putio-manager/2.1.0/launch --mode headless agent settings-set --json --config /var/lib/putio-manager/private/config.json
+```
+
+This does not change an existing job's saved staging choice or move work onto the desktop. Root selection and all downloads still belong to the server. Path, token and unknown setting fields are rejected by this safe interface. Keep server folder provisioning in the authorized server setup procedure.
+
+### Restart only the manager service
+
+Run service lifecycle commands on the Linux service host using its existing operating-system permissions:
+
+```sh
+/opt/putio-manager/2.1.0/launch --mode headless service help
+/opt/putio-manager/2.1.0/launch --mode headless service status
+sudo /opt/putio-manager/2.1.0/launch --mode headless service restart
+```
+
+These commands control only `putio-manager.service`. They do not accept another unit, run a shell, request a password dialog or reboot the machine. A user service may use the trailing `--user` option. An administrator may supply the necessary permission through the existing system policy; the CLI does not grant it.
+
+On Linux, `service status` can also report elapsed process time, CPU time and cumulative storage bytes read from kernel process metadata. It obtains the fixed service's process identifier internally and reads only its kernel metadata files and system uptime. It does not return that identifier, the process command, usernames or paths. `bytesRead` is process I/O accumulated over the process's lifetime, not download traffic or current transfer speed. Missing permissions or unusable measurements produce an unavailable process state and `null` counters.
+
+These measurements can help observe a process while the application's connection is unavailable. They do not identify what a job is doing or prove successful recovery. `applicationReady` remains `null` and `readiness` remains `not-verified`; an active service or changing CPU/I/O counters do not verify application readiness. After a restart, allow time for saved-download checks before retrying the application status command.
+
+Before an update or planned interruption, use the manager's `pause` command and read its result. After a restart, verify `service status`, then `agent status`, `storage` and `downloads`. Resume only when intended. An active service does not prove account connection, job completion or resumed work. Saved paused/canceled intent and the existing recovery guards remain in force.
+
+### Clear error explanations
+
+End-user error messages use short sentences, consistent terms and explicit next actions informed by ASD-STE100. They replace internal terms such as ownership anchors and publication with a description of the affected download step. This is not a certification claim. The message separates an unverified destination, a temporary-file cleanup problem and an uncertain put.io deletion. It does not invent a cause for an older generic error or claim a copy is safe without verification evidence.
+
+

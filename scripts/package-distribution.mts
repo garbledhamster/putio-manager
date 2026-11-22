@@ -7,7 +7,7 @@ const out=path.join('release',`PutioManager-${platform}-${arch}-distribution`);
 try { await lstat(out); throw new Error('Distribution output already exists. Build in a clean checkout.'); }
 catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
 await mkdir(path.join(out,'headless'),{recursive:true});
-for (const name of ['core','engine','remote','server','shared.js']) await cp(path.join('dist',name),path.join(out,'headless',name),{recursive:true});
+for (const name of ['core','engine','remote','server','messages','shared.js']) await cp(path.join('dist',name),path.join(out,'headless',name),{recursive:true});
 await cp(process.execPath,path.join(out,platform==='win32'?'node.exe':'node'));
 // macOS frameworks contain relative links; keep them relative in the portable copy.
 await cp(path.join('release',`PutioManager-${platform}-${arch}`),path.join(out,'desktop'),{recursive:true,verbatimSymlinks:true});
@@ -22,6 +22,8 @@ const nodeLicenseText = await nodeLicense.text();
 if (!nodeLicenseText.includes('Node.js')) throw new Error('Unexpected Node license response.');
 await writeFile(path.join(out,'LICENSE-Node.txt'), nodeLicenseText);
 await writeFile(path.join(out,'NODE-PROVENANCE.txt'), `Bundled Node ${process.version}; source license: ${nodeLicenseUrl}\n`);
-await writeFile(path.join(out,'launch.cjs'),`const {spawn}=require('node:child_process'); const path=require('node:path'); const args=process.argv.slice(2); let mode; if(args[0]==='--mode'){mode=args[1];args.splice(0,2)} if(!mode) mode=process.platform==='linux' && !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY?'headless':'gui'; if(!['gui','headless'].includes(mode)){console.error('Use --mode gui or --mode headless.');process.exit(1)} const gui=process.platform==='win32'?'desktop/PutioManager.exe':process.platform==='darwin'?'desktop/PutioManager.app/Contents/MacOS/PutioManager':'desktop/PutioManager'; const command=mode==='gui'?path.join(__dirname,gui):process.execPath; const child=spawn(command,mode==='gui'?args:[path.join(__dirname,'headless/server/cli.js'),...args],{stdio:'inherit'});child.on('error',()=>{console.error('Could not launch selected mode.');process.exitCode=1});child.on('exit',(code)=>{process.exitCode=code??1});`);
+await writeFile(path.join(out,'launch.cjs'),`const {spawn}=require('node:child_process'); const path=require('node:path'); const args=process.argv.slice(2); let mode; if(args[0]==='--mode'){if(!args[1]){console.error('Select a launch mode.');process.exit(1)}mode=args[1];args.splice(0,2)} if(!mode) mode=process.platform==='linux' && !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY?'headless':'gui'; if(!['gui','headless','agent'].includes(mode)){console.error('Use --mode gui, --mode headless or --mode agent.');process.exit(1)} const gui=process.platform==='win32'?'desktop/PutioManager.exe':process.platform==='darwin'?'desktop/PutioManager.app/Contents/MacOS/PutioManager':'desktop/PutioManager'; const command=mode==='headless'?process.execPath:path.join(__dirname,gui); const child=spawn(command,mode==='headless'?[path.join(__dirname,'headless/server/cli.js'),...args]:mode==='agent'?['--agent',...args]:args,{stdio:'inherit'});child.on('error',()=>{console.error('Could not launch selected mode.');process.exitCode=1});child.on('exit',(code)=>{process.exitCode=code??1});`);
 await writeFile(path.join(out,'launch.cmd'),'@echo off\r\n"%~dp0node.exe" "%~dp0launch.cjs" %*\r\n');
 await writeFile(path.join(out,'launch'),'#!/bin/sh\nexec "$(dirname "$0")/node" "$(dirname "$0")/launch.cjs" "$@"\n',{mode:0o755});
+
+

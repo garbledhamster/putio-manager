@@ -5,6 +5,7 @@ import type { BrowserWindow } from "electron";
 import { RemoteEngine } from "../remote/client";
 import { validateAccountLink } from "../shared";
 import { folderDeleteCount, releaseWaitingFixture, submittedTransferParents } from "./smoke-fixture";
+import { presentUserError } from "../messages/user-messages";
 
 /** Exercises the real renderer and preload bridge against the isolated smoke fixture. */
 export async function runUiScenario(window: BrowserWindow, remote: { url: string; token: string }, openMagnet: () => void): Promise<void> {
@@ -159,9 +160,10 @@ export async function runUiScenario(window: BrowserWindow, remote: { url: string
   const onlineSnapshot = await evaluate<any>("window.putio.getState()");
   const unavailableSnapshot = structuredClone(onlineSnapshot);
   unavailableSnapshot.target = { mode: "remote", label: "Fixture", status: "error", message: "Fixture engine unavailable." };
+  const expectedEngineError = presentUserError("Fixture engine unavailable.", { host: "remote" }).message;
   window.webContents.send("state", unavailableSnapshot);
-  await waitFor("document.querySelector('#engine-error .message-text')?.textContent === 'Fixture engine unavailable.'", "engine error reason");
-  const copiedEngineError = await evaluate<boolean>(`(async () => { const box=document.querySelector('#engine-error'); box.querySelector('.copy-message')?.click(); await new Promise(resolve=>setTimeout(resolve,0)); return window.__copySmoke.at(-1)==='Fixture engine unavailable.'; })()`);
+  await waitFor(`document.querySelector('#engine-error .message-text')?.textContent === ${JSON.stringify(expectedEngineError)}`, "plain engine error reason");
+  const copiedEngineError = await evaluate<boolean>(`(async () => { const box=document.querySelector('#engine-error'); box.querySelector('.copy-message')?.click(); await new Promise(resolve=>setTimeout(resolve,0)); return window.__copySmoke.at(-1)===${JSON.stringify(expectedEngineError)} && !box.textContent.includes('Fixture engine unavailable.'); })()`);
   if (!copiedEngineError) throw new Error("Engine connection error was not copyable.");
   window.webContents.send("state", onlineSnapshot);
   await waitFor("document.querySelector('#engine-error')?.hidden", "engine error cleared");
@@ -519,16 +521,18 @@ export async function runUiScenario(window: BrowserWindow, remote: { url: string
   await waitFor("window.putio.getState().then(s => s.jobs.some(j => j.name === 'cleanup-warning.bin' && j.status === 'completed' && j.verification === 'verified' && ['failed', 'unknown'].includes(j.cleanupStatus) && j.cleanupWarning))", "verified download with cleanup warning");
   const cleanupId = await evaluate<string>("window.putio.getState().then(s => s.jobs.find(j => j.name === 'cleanup-warning.bin').id)");
   const warning = await evaluate<string>(`window.putio.getState().then(s => s.jobs.find(j => j.id === ${JSON.stringify(cleanupId)}).cleanupWarning)`);
+  const warningContext = await evaluate<any>(`window.putio.getState().then(s => ({...s.jobs.find(j => j.id === ${JSON.stringify(cleanupId)}),host:s.target?.mode}))`);
+  const expectedWarning = presentUserError(warning, warningContext).message;
   await evaluate(`document.querySelector(${JSON.stringify(`[data-job-id="${cleanupId}"]`)}).click()`);
   const cleanupCopy = await evaluate<string[]>(`[...document.querySelector(${JSON.stringify(`[data-job-id="${cleanupId}"]`)}).querySelectorAll('.download-status > div')].map(el => el.textContent)`);
-  if (!cleanupCopy.some(text => text.includes(warning))) throw new Error(`Cleanup warning missing from verified completed row: ${cleanupCopy.join(' | ')}`);
-  if (!cleanupCopy[0].toLowerCase().includes('complete') || cleanupCopy[0].includes(warning)) throw new Error(`Local completion and cleanup warning must be separate: ${cleanupCopy.join(' | ')}`);
+  if (!cleanupCopy.some(text => text.includes(expectedWarning)) || cleanupCopy.some(text => text.includes(warning))) throw new Error("Plain cleanup warning missing or raw diagnostic visible.");
+  if (!cleanupCopy[0].toLowerCase().includes('complete') || cleanupCopy[0].includes(expectedWarning)) throw new Error("Local completion and cleanup warning must be separate.");
   const cleanupFocus = await evaluate<boolean>(`(() => { const b = document.querySelector('#downloads-open'); b.focus(); return document.activeElement === b; })()`);
   if (!cleanupFocus) throw new Error("Download toolbar cannot receive keyboard focus with cleanup warning.");
-  await capture("downloads-cleanup-warning-default", cleanupId, warning);
+  await capture("downloads-cleanup-warning-default", cleanupId, expectedWarning);
   window.setSize(640, 560); await new Promise(resolve => setTimeout(resolve, 250));
   await checkLayout("narrow cleanup warning Downloads");
-  await capture("downloads-cleanup-warning-narrow", cleanupId, warning);
+  await capture("downloads-cleanup-warning-narrow", cleanupId, expectedWarning);
   window.setSize(892, 510); await new Promise(resolve => setTimeout(resolve, 250));
   if (!await evaluate<boolean>(`window.putio.getState().then(s => s.jobs.filter(j => j.name === 'cleanup-warning.bin' && j.id === ${JSON.stringify(cleanupId)}).length === 1)`)) throw new Error("Cleanup warning changed the download row identity.");
   // Hold the durable folder in-flight marker, not the HTTP delete itself.

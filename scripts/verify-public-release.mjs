@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { gunzipSync, inflateRawSync } from 'node:zlib';
 
 const sourceRoots = new Set(['src', 'scripts', 'tests', 'docs', '.github']);
-const sourceFiles = new Set(['.gitattributes', '.gitignore', 'README.md', 'CHANGELOG.md', 'CONTRIBUTING.md', 'SECURITY.md', 'LICENSE', 'NOTICE', 'THIRD-PARTY-NOTICES.md', 'package.json', 'package-lock.json', 'tsconfig.json', 'tsconfig.ui.json']);
+const sourceFiles = new Set(['.gitattributes', '.gitignore', 'AGENTS.md', 'README.md', 'CHANGELOG.md', 'CONTRIBUTING.md', 'SECURITY.md', 'LICENSE', 'NOTICE', 'THIRD-PARTY-NOTICES.md', 'package.json', 'package-lock.json', 'tsconfig.json', 'tsconfig.ui.json']);
 const generatedRoots = new Set(['.git', 'node_modules', 'dist', 'release', 'release-assets']);
 const distributionRoots = new Set(['desktop', 'headless']);
 const distributionFiles = new Set(['node', 'node.exe', 'launch', 'launch.cmd', 'launch.cjs', 'README.md', 'LICENSE-PutioManager.txt', 'LICENSE-Node.txt', 'NODE-PROVENANCE.txt']);

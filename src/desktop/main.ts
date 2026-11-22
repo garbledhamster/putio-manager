@@ -13,6 +13,8 @@ import { startRemoteServer } from "../server/server";
 import { RemoteEngine } from "../remote/client";
 import { defaultSettings } from "../core/settings";
 import { RemoteFile, Settings, Snapshot, validateAccountLink } from "../shared";
+import { runAgentCommand, safeAgentError } from "../server/agent-cli";
+import { readSettingsInput } from "../server/cli-input";
 
 // GUI launches may inherit a logging pipe that closes before Electron writes a warning.
 for (const stream of [process.stdout, process.stderr]) {
@@ -22,6 +24,7 @@ for (const stream of [process.stdout, process.stderr]) {
 }
 
 const smoke = process.argv.includes("--smoke-test");
+const agentMode = process.argv.includes("--agent");
 const smokeDir = smoke ? mkdtempSync(path.join(os.tmpdir(), "putio-smoke-")) : "";
 if (smoke) app.setPath("userData", smokeDir);
 let window: BrowserWindow;
@@ -92,7 +95,7 @@ async function handleMagnet(value: string) {
 }
 const magnets = new MagnetQueue(handleMagnet);
 
-if (!smoke) {
+if (!smoke && !agentMode) {
   if (!app.requestSingleInstanceLock()) app.exit(0);
   else {
     magnets.receive(process.argv);
@@ -320,6 +323,33 @@ function bindHandlers() {
   bind("openTokenPage", () => shell.openExternal("https://app.put.io/settings/account"));
 }
 app.whenReady().then(async () => {
+  if (agentMode) {
+    // Agent administration never creates a window, starts a Local engine or exposes a credential.
+    const args = process.argv.slice(process.argv.indexOf("--agent") + 1);
+    let remote: RemoteEngine | undefined;
+    let exitCode = 1;
+    try {
+      if (["help", "--help", "-h"].includes(args[0])) {
+        const unused: EngineClient = { getSnapshot: async () => { throw new Error(); }, execute: async () => { throw new Error(); }, subscribe: () => () => {}, close: async () => {} };
+        exitCode = await runAgentCommand(unused, args, line => process.stdout.write(line));
+      } else {
+        await loadConfig();
+        if (config.mode !== "remote") throw new Error("Configure the server address and client credential in Settings.");
+        if (!config.url || !config.encryptedToken || !credentials.available()) throw new Error("Could not unlock the remote server credential.");
+        const token = credentials.decrypt(Buffer.from(config.encryptedToken, "base64"));
+        remote = new RemoteEngine({ url: config.url, token });
+        const selectedRemote: EngineClient = {
+          getSnapshot: async () => ({ ...await remote!.getSnapshot(), target: { mode: "remote", label: "", status: "connected" } }),
+          execute: (command, input, requestId) => remote!.execute(command, input, requestId),
+          subscribe: (listener, onError) => remote!.subscribe(listener, onError),
+          close: () => remote!.close(),
+        };
+        exitCode = await runAgentCommand(selectedRemote, args, line => process.stdout.write(line), await readSettingsInput(args));
+      }
+    } catch (error) { process.stdout.write(JSON.stringify({ ok: false, error: safeAgentError(error) }) + "\n"); }
+    finally { await remote?.close(); app.exit(exitCode); }
+    return;
+  }
   if (process.argv.includes("--verify-startup")) {
     if (smoke) throw new Error("Native startup verification is unavailable during smoke tests.");
     if (!app.isPackaged || !integration.startupSupported) throw new Error("Native startup verification requires a supported packaged application.");
@@ -390,7 +420,11 @@ app.whenReady().then(async () => {
     if (!address || typeof address === "string") throw new Error("Fixture server address unavailable.");
     await runUiScenario(window, { url: `http://127.0.0.1:${address.port}`, token: fixtureToken }, () => magnets.receive(["magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567"]));
     await server.close(); await remoteFixture.close(); const arg = process.argv.find(v => v.startsWith("--screenshot=")); if (arg) await fs.writeFile(arg.slice(13), (await window.webContents.capturePage()).toPNG()); console.log("SMOKE PASS"); fixture?.server.close(); app.quit(); }
-}).catch(error => { console.error("Startup or smoke test failed:", error.message); app.exit(1); });
+}).catch(error => {
+  if (agentMode) console.log(JSON.stringify({ ok: false, error: safeAgentError(error) }));
+  else console.error("Startup or smoke test failed:", error.message);
+  app.exit(1);
+});
 app.on("activate", () => { if (!smoke && window && !window.isDestroyed()) window.show(); });
 let closing = false;
 app.on("before-quit", event => { quitting = true; const owner = retainedOwner ?? client; if (!closing && owner) { event.preventDefault(); closing = true; unsubscribe?.(); void owner.close().then(() => app.quit(), () => app.quit()); } });

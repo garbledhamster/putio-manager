@@ -10,3 +10,4 @@ await cp('src/ui/heroicons.css', 'dist/ui/heroicons.css');
 await cp('src/ui/heroicons', 'dist/ui/heroicons', {recursive:true});
 
 await cp('src/ui/branding', 'dist/ui/branding', {recursive:true});
+

@@ -3,6 +3,7 @@ import type { DownloadJob, RemoteFile, RemoteTransfer, Snapshot, Settings, AutoD
 import { icon } from "./icons.js";
 import { makeParagraphsCopyable, setCopyableMessage } from "./copy-message.js";
 import { canCheckRules, requestRuleCheck } from "./rule-check.js";
+import { presentUserError } from "./user-messages.js";
 
 type View = "files" | "downloads" | "transfers" | "rules" | "settings";
 type Field = {
@@ -104,6 +105,7 @@ function tool(
   return b;
 }
 function showNotice(message = "", error = false) {
+  if (error && message) message = presentUserError(message, { host: state?.target?.mode }).message;
   setCopyableMessage(notice, message);
   notice.className = message ? (error ? "error" : "status") : "";
   notice.setAttribute("role", error ? "alert" : "status");
@@ -131,9 +133,9 @@ function renderTarget() {
   const engineStatus = $("engine-status");
   const transport = target?.status === "connected" ? "Online" : target?.status === "error" ? "Unavailable" : "Connecting";
   engineStatus.textContent = target ? `Engine: ${target.mode === "local" ? "Local" : "Remote"} · ${transport}` : "Engine: loading";
-  engineStatus.title = target ? [engineStatus.textContent, target.mode === "remote" ? target.label : "", target.message ?? ""].filter(Boolean).join(" · ") : engineStatus.textContent;
+  engineStatus.title = target ? [engineStatus.textContent, target.mode === "remote" ? target.label : "", target.message ? presentUserError(target.message, { host: target.mode }).message : ""].filter(Boolean).join(" · ") : engineStatus.textContent;
   const engineError = $("engine-error");
-  const errorMessage = target?.status === "error" ? target.message || "The selected engine is unavailable." : "";
+  const errorMessage = target?.status === "error" ? presentUserError(target.message || "The selected engine is unavailable.", { host: target.mode }).message : "";
   engineError.hidden = !errorMessage;
   engineError.className = errorMessage ? "error" : "";
   setCopyableMessage(engineError, errorMessage);
@@ -141,7 +143,7 @@ function renderTarget() {
   account.textContent = `put.io: ${accountText(state)}`;
   account.dataset.state = state?.account?.status ?? "disconnected";
   const detail = document.getElementById("connection-status");
-  if (detail) { detail.dataset.state = state?.account?.status ?? "disconnected"; setCopyableMessage(detail, `${accountText(state)}${state?.account?.message ? ` · ${state.account.message}` : ""}${state?.hasToken && state.account?.status !== "connected" ? " · Credential saved" : ""}`); }
+  if (detail) { detail.dataset.state = state?.account?.status ?? "disconnected"; setCopyableMessage(detail, `${accountText(state)}${state?.account?.message ? ` · ${presentUserError(state.account.message, { host: target?.mode }).message}` : ""}${state?.hasToken && state.account?.status !== "connected" ? " · Connection saved" : ""}`); }
   const connect = document.getElementById("settings-connect");
   if (connect) {
     const connected = state?.account?.status === "connected";
@@ -383,7 +385,7 @@ async function searchAccount(session: NonNullable<typeof search>) {
   const renderResults = () => { if (active()) render(); };
   const searchTransfers = async () => {
     try { session.transfers = await api.listTransfers(); }
-    catch { session.errors.push("Transfers could not be loaded."); }
+    catch { session.errors.push("The app could not load transfers. Check the put.io connection, then refresh Transfers."); }
     renderResults();
   };
   const searchFiles = async () => {
@@ -394,7 +396,8 @@ async function searchAccount(session: NonNullable<typeof search>) {
       let files: RemoteFile[];
       try { files = await api.listFiles(parent.id); }
       catch {
-        if (!session.errors.includes("Some put.io folders could not be searched.")) session.errors.push("Some put.io folders could not be searched.");
+        const message = "The app could not search some put.io folders. Check the put.io connection, then repeat the search.";
+        if (!session.errors.includes(message)) session.errors.push(message);
         if (index === 0) break;
         continue;
       }
@@ -445,7 +448,7 @@ function renderSearch() {
     add("downloads", job.id, job.name, "Downloads · " + job.status, () => { selectedJob = job.id; });
   }
   for (const transfer of session.transfers) if (matches(transfer.name)) {
-    add("transfers", transfer.id, transfer.name, "Transfers · " + transfer.status, () => {
+    add("transfers", transfer.id, transfer.name, "Transfers · " + transferStatusText(transfer.status), () => {
       transfers = session.transfers;
       selectedTransfer = transfer.id;
     });
@@ -966,11 +969,12 @@ function renderDownloads() {
       : j.status === "restarting" ? "Restarting"
       : j.status;
     const primary = node("div");
-    const message = j.error ? `${statusText}: ${j.error}` : statusText;
+    const context = { host: state?.target?.mode, status: j.status, verification: j.verification, cleanupStatus: j.cleanupStatus, cleanupPending: j.cleanupPending, phase: j.deliveryPhase };
+    const message = j.error ? `${statusText}: ${presentUserError(j.error, context).message}` : statusText;
     setCopyableMessage(primary, message);
     status.append(primary);
-    if (j.cleanupWarning) { const warning = node("div"); setCopyableMessage(warning, j.cleanupWarning); status.append(warning); }
-    if (j.stagingWarning) { const warning = node("div"); setCopyableMessage(warning, j.stagingWarning); status.append(warning); }
+    if (j.cleanupWarning) { const warning = node("div"); setCopyableMessage(warning, presentUserError(j.cleanupWarning, context).message); status.append(warning); }
+    if (j.stagingWarning) { const warning = node("div"); setCopyableMessage(warning, presentUserError(j.stagingWarning, context).message); status.append(warning); }
     const showingCopy = j.deliveryPhase === "copying" && ["copying", "paused", "needs-attention", "interrupted"].includes(j.status);
     const progress = node("progress");
     progress.max = j.totalBytes || 1;
@@ -997,6 +1001,17 @@ function renderDownloads() {
       "No downloads yet. Select a file in Files and choose Download.",
     );
 }
+function transferStatusText(value: string): string {
+  const known: Record<string, string> = {
+    COMPLETED: "Completed", DOWNLOADING: "Downloading", IN_QUEUE: "Queued", QUEUED: "Queued",
+    WAITING: "Waiting", EXTRACTING: "Extracting", SEEDING: "Seeding", RETRYING: "Retrying",
+    CHECKING: "Checking", MAGNET_CONVERSION: "Preparing transfer", CONVERTING: "Preparing transfer",
+    PAUSED: "Paused", CANCELED: "Canceled", CANCELLED: "Canceled",
+    ERROR: "The transfer failed. Check the transfer on put.io before you try again.",
+    FAILED: "The transfer failed. Check the transfer on put.io before you try again.",
+  };
+  return known[value.toUpperCase()] ?? "Status unavailable. Refresh Transfers and check the transfer on put.io.";
+}
 function renderTransfers() {
   title("Transfers");
   const body = table(
@@ -1013,7 +1028,7 @@ function renderTransfers() {
       String(t.peers),
       size(t.uploaded),
       t.createdAt,
-      t.status,
+      transferStatusText(t.status),
     ])
       tr.append(node("td", s));
     rowSelect(tr, () => {
@@ -1045,7 +1060,8 @@ async function loadTransfers() {
 }
 function renderRules() {
   title("Auto Downloads");
-  const status = node("p", `Scan status: ${state!.scanStatus} · Engine time zone: ${state!.timeZone}. Missed runs are skipped while offline or paused. A nonexistent daylight-saving time is skipped; a repeated time runs once at its first occurrence. Intervals restart on resume.`);
+  const scan = ["idle", "scanning"].includes(state!.scanStatus) ? state!.scanStatus : presentUserError(state!.scanStatus, { host: state?.target?.mode }).message;
+  const status = node("p", `Scan status: ${scan} · Download host time zone: ${state!.timeZone}. Missed runs are skipped while offline or paused. A nonexistent daylight-saving time is skipped; a repeated time runs once at its first occurrence. Intervals restart on resume.`);
   status.id = "scan-status";
   if (state!.paused) status.textContent += " Rule checks are unavailable while the engine is paused; resume it to check rules.";
   view.append(status);
@@ -1189,7 +1205,7 @@ function renderSettings() {
     status.id = "connection-status";
     status.className = "connection-status";
     status.dataset.state = state!.account?.status ?? "disconnected";
-    status.textContent = `${accountText(state)}${state!.account?.message ? ` · ${state!.account.message}` : ""}${state!.hasToken && state!.account?.status !== "connected" ? " · Credential saved" : ""}`;
+    status.textContent = `${accountText(state)}${state!.account?.message ? ` · ${presentUserError(state!.account.message, { host: state?.target?.mode }).message}` : ""}${state!.hasToken && state!.account?.status !== "connected" ? " · Connection saved" : ""}`;
     content.append(status);
     const remoteFields = node("details");
     remoteFields.id = "remote-details";
@@ -1263,16 +1279,16 @@ function renderSettings() {
     }
     content.append(row);
     if (typeof s.stageDownloads === "boolean" && typeof s.stagingDirectory === "string" && typeof s.stagingMaxBytes === "number" && typeof s.stagingMinimumFreeBytes === "number") {
-      inputField(content, "Download locally before copying to destination", "settings-stage-downloads", "checkbox", s.stageDownloads);
+      inputField(content, "Use temporary storage before copying to the download folder", "settings-stage-downloads", "checkbox", s.stageDownloads);
       const stageRow = node("div"); stageRow.className = "directory-row";
-      const stagePath = inputField(stageRow, "Engine staging directory", "settings-staging-directory", "text", s.stagingDirectory);
+      const stagePath = inputField(stageRow, "Temporary folder on the download host", "settings-staging-directory", "text", s.stagingDirectory);
       if (state!.target?.mode === "remote") stagePath.readOnly = true;
       else stageRow.append(button("Browse", "settings-staging-browse", () => void run(async () => { const d = await api.chooseDirectory(); if (d) stagePath.value = d; })));
       content.append(stageRow);
       const stageBudget = inputField(content, "Staging budget (GiB)", "settings-staging-budget", "number", String(s.stagingMaxBytes / 1024 ** 3)); stageBudget.min = "0"; stageBudget.step = "any";
       const stageReserve = inputField(content, "Free-space reserve (GiB)", "settings-staging-reserve", "number", String(s.stagingMinimumFreeBytes / 1024 ** 3)); stageReserve.min = "0"; stageReserve.step = "any";
-      const help = node("p", "Uses storage on the selected engine; applies to new downloads."); help.className = "hint"; content.append(help);
-      if (state!.stagingNotice) { const notice = node("p", state!.stagingNotice); notice.className = "hint"; content.append(notice); }
+      const help = node("p", state?.target?.mode === "remote" ? "Downloads and temporary storage use the download server. This computer only controls the server. Applies to new downloads." : "Downloads and temporary storage use this computer. Select Remote in General to use a download server."); help.className = "hint"; content.append(help);
+      if (state!.stagingNotice) { const notice = node("p", presentUserError(state!.stagingNotice, { host: state?.target?.mode }).message); notice.className = "hint"; content.append(notice); }
     }
     const parallel = inputField(
       content,
@@ -1448,7 +1464,7 @@ function ask(
         }
       }
       try { if (validate) await validate(values); finish(values); }
-      catch (error) { setCopyableMessage($("dialog-error"), error instanceof Error ? error.message : String(error)); }
+      catch (error) { setCopyableMessage($("dialog-error"), presentUserError(error, { host: state?.target?.mode }).message); }
     };
     dialog.showModal();
   });

@@ -6,7 +6,7 @@ export interface EngineSnapshot extends Snapshot {
   paused: boolean;
   roots: { id: string; label: string }[];
 }
-export type EngineCommand = "listFiles" | "moveFile" | "renameFile" | "createFolder" | "deleteFile" | "downloadFile" | "downloadZip" | "retryDownload" | "cancelDownloads" | "listTransfers" | "addTransfer" | "cancelTransfer" | "saveSettings" | "prepareRuleDirectory" | "updateRule" | "addRule" | "removeRule" | "checkRules" | "pause" | "resume" | "beginAccountLink" | "cancelAccountLink" | "selectDownloadRoot";
+export type EngineCommand = "listFiles" | "moveFile" | "renameFile" | "createFolder" | "deleteFile" | "downloadFile" | "downloadZip" | "retryDownload" | "cancelDownloads" | "listTransfers" | "addTransfer" | "cancelTransfer" | "saveSettings" | "prepareRuleDirectory" | "updateRule" | "addRule" | "removeRule" | "checkRules" | "pause" | "resume" | "beginAccountLink" | "cancelAccountLink" | "selectDownloadRoot" | "storageStatus";
 export interface EngineClient {
   getSnapshot(): Promise<EngineSnapshot>;
   execute(command: EngineCommand, args?: unknown[], requestId?: string): Promise<unknown>;
