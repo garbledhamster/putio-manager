@@ -25,6 +25,7 @@ test('context setup waits for native content dimensions and two renderer frames 
   const frames = [], requests = [];
   const window = {
     setSize(width, height) { requests.push([width, height]); native = [width - 16, height - 39]; },
+    getBounds() { const [width, height] = requests.at(-1); return { width, height }; },
     getContentSize() { return native; },
     webContents: { async executeJavaScript(expression) {
       return vm.runInNewContext(expression, { innerWidth: renderer[0], innerHeight: renderer[1], Promise, requestAnimationFrame(callback) { totalFrames++; frames.push(callback); } });
@@ -42,12 +43,47 @@ test('context setup waits for native content dimensions and two renderer frames 
 
 test('context setup fails when the renderer never reaches native content dimensions', async () => {
   let clock = 0, frames = 0;
-  const fixture = boundaries({ setSize() {}, getContentSize() { return [624, 521]; }, webContents: { async executeJavaScript(expression) {
+  const fixture = boundaries({ setSize() {}, getBounds() { return { width: 640, height: 560 }; }, getContentSize() { return [624, 521]; }, webContents: { async executeJavaScript(expression) {
     if (expression.includes('requestAnimationFrame')) frames++;
     return '';
   } } }, { Date: { now() { clock += 15001; return clock; } } });
   await assert.rejects(fixture.resizeContextViewport(640, 560), /renderer viewport matches native content bounds/);
   assert.equal(frames, 0);
+});
+
+test('matching old native and renderer sizes cannot release setup before the requested native resize', async () => {
+  let bounds = { width: 892, height: 510 }, native = [876, 471], renderer = native.slice(), contentReads = 0, settled = false;
+  const frames = [];
+  const fixture = boundaries({
+    setSize(width, height) { assert.deepEqual([width, height], [640, 560]); },
+    getBounds() { return bounds; },
+    getContentSize() { contentReads++; return native; },
+    webContents: { async executeJavaScript(expression) {
+      return vm.runInNewContext(expression, { innerWidth: renderer[0], innerHeight: renderer[1], Promise, requestAnimationFrame(callback) { frames.push(callback); } });
+    } },
+  });
+  const resizing = fixture.resizeContextViewport(640, 560).then(() => { settled = true; });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(contentReads, 0); assert.equal(frames.length, 0); assert.equal(settled, false);
+  bounds = { width: 640, height: 560 }; native = [624, 521];
+  await until(() => contentReads === 1);
+  assert.equal(frames.length, 0); assert.equal(settled, false);
+  renderer = native.slice(); await until(() => frames.length === 1);
+  frames.shift()(0); assert.equal(settled, false);
+  frames.shift()(0); await resizing;
+  assert.equal(settled, true);
+});
+
+test('a native resize that never applies fails before reading content bounds or opening renderer work', async () => {
+  let clock = 0, contentReads = 0, rendererCalls = 0;
+  const fixture = boundaries({
+    setSize() {}, getBounds() { return { width: 892, height: 510 }; },
+    getContentSize() { contentReads++; return [876, 471]; },
+    webContents: { async executeJavaScript() { rendererCalls++; } },
+  }, { Date: { now() { clock += 15001; return clock; } } });
+  fixture.setStage('downloads-context-restored');
+  await assert.rejects(fixture.resizeContextViewport(640, 560), /native resize timed out: stage=downloads-context-restored/);
+  assert.equal(contentReads, 0); assert.equal(rendererCalls, 0);
 });
 
 test('script failures expose only a stage, expression hash and bounded boolean/numeric state', async () => {
@@ -78,5 +114,38 @@ test('missing context menu diagnostics retain owner and event evidence without r
     assert.match(error.message, /UI smoke context menu timed out: stage=files-context-file/);
     assert.match(error.message, /"menu":false/); assert.match(error.message, /"resizesSinceOpen":1/);
     assert.ok(!error.message.includes('PRIVATE_RENDERER_SENTINEL')); return true;
+  });
+});
+
+test('Downloads failures inspect the current download owner and fresh open baseline without exposing its identity', async () => {
+  const owner = 'generated-private-job-identifier';
+  let inspectedDownloads = false;
+  const row = { dataset: { jobId: owner }, classList: { contains(value) { return value === 'selected'; } }, querySelector() { return { textContent: 'Waiting' }; } };
+  const renderer = {
+    innerWidth: 640, innerHeight: 532,
+    window: { __contextSmoke: { view: 'downloads', owner, opened: true, resizes: 10, outsidePointers: 0, beforeResizes: 10, beforeOutside: 0 } },
+    document: {
+      querySelectorAll(selector) { assert.equal(selector, '[data-job-id]'); inspectedDownloads = true; return [row]; },
+      querySelector(selector) {
+        if (selector === '.context-menu' || selector.includes('data-group="Recovery"')) return {};
+        return null;
+      },
+    },
+  };
+  const fixture = boundaries({ webContents: { async executeJavaScript(expression) {
+    if (expression.includes('window.__contextSmoke')) return vm.runInNewContext(expression, renderer);
+    throw Error('Generated menu failure.');
+  } } });
+  fixture.setStage('downloads-context-restored');
+  await assert.rejects(fixture.evaluate('generated failure'), error => {
+    assert.equal(inspectedDownloads, true);
+    assert.match(error.message, /stage=downloads-context-restored/);
+    assert.match(error.message, /"ownerPresent":true/);
+    assert.match(error.message, /"ownerSelected":true/);
+    assert.match(error.message, /"ownerWaiting":true/);
+    assert.match(error.message, /"recovery":true/);
+    assert.match(error.message, /"resizesSinceOpen":0/);
+    assert.ok(!error.message.includes(owner));
+    return true;
   });
 });

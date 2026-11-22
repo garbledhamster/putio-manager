@@ -20,11 +20,11 @@ export async function runUiScenario(window: BrowserWindow, remote: { url: string
   let fixtureStage = "scenario";
   const contextEvidence = async (): Promise<Record<string, number | boolean>> => {
     try {
-      const raw = await window.webContents.executeJavaScript(`(() => { const p=window.__contextSmoke ?? {}; const row=document.querySelector('[data-file-id="'+(p.owner===2?'2':'0')+'"]'); return {width:innerWidth,height:innerHeight,opened:p.opened,menu:!!document.querySelector('.context-menu'),manage:!!document.querySelector('.context-menu [data-group="Manage"]'),ownerPresent:!!row,ownerSelected:!!row?.classList.contains('selected'),resizes:p.resizes ?? 0,outsidePointers:p.outsidePointers ?? 0,resizesSinceOpen:(p.resizes ?? 0)-(p.beforeResizes ?? 0),outsideSinceOpen:(p.outsidePointers ?? 0)-(p.beforeOutside ?? 0)}; })()`);
+      const raw = await window.webContents.executeJavaScript(`(() => { const p=window.__contextSmoke ?? {}; const row=p.view==='downloads'?[...document.querySelectorAll('[data-job-id]')].find(row=>row.dataset.jobId===p.owner):document.querySelector('[data-file-id="'+(p.owner===2?'2':'0')+'"]'); return {width:innerWidth,height:innerHeight,opened:p.opened,menu:!!document.querySelector('.context-menu'),manage:!!document.querySelector('.context-menu [data-group="Manage"]'),recovery:!!document.querySelector('.context-menu [data-group="Recovery"]'),ownerPresent:!!row,ownerSelected:!!row?.classList.contains('selected'),ownerWaiting:p.view==='downloads'&&!!row?.querySelector('.download-status')?.textContent.includes('Waiting'),resizes:p.resizes ?? 0,outsidePointers:p.outsidePointers ?? 0,resizesSinceOpen:(p.resizes ?? 0)-(p.beforeResizes ?? 0),outsideSinceOpen:(p.outsidePointers ?? 0)-(p.beforeOutside ?? 0)}; })()`);
       const safe: Record<string, number | boolean> = {};
       for (const key of ["width", "height", "resizes", "outsidePointers", "resizesSinceOpen", "outsideSinceOpen"])
         if (typeof raw?.[key] === "number" && Number.isFinite(raw[key]) && raw[key] >= 0 && raw[key] <= 100000) safe[key] = raw[key];
-      for (const key of ["opened", "menu", "manage", "ownerPresent", "ownerSelected"]) if (typeof raw?.[key] === "boolean") safe[key] = raw[key];
+      for (const key of ["opened", "menu", "manage", "recovery", "ownerPresent", "ownerSelected", "ownerWaiting"]) if (typeof raw?.[key] === "boolean") safe[key] = raw[key];
       return safe;
     } catch { return {}; }
   };
@@ -56,6 +56,13 @@ export async function runUiScenario(window: BrowserWindow, remote: { url: string
   };
   const resizeContextViewport = async (width: number, height: number): Promise<void> => {
     window.setSize(width, height);
+    const deadline = Date.now() + 15000;
+    while (true) {
+      const bounds = window.getBounds();
+      if (bounds.width === width && bounds.height === height) break;
+      if (Date.now() >= deadline) throw new Error(`UI smoke native resize timed out: stage=${fixtureStage}`);
+      await new Promise<void>(resolve => setTimeout(resolve, 100));
+    }
     const [contentWidth, contentHeight] = window.getContentSize();
     await waitFor(`innerWidth === ${contentWidth} && innerHeight === ${contentHeight}`, "renderer viewport matches native content bounds");
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -757,7 +764,8 @@ export async function runUiScenario(window: BrowserWindow, remote: { url: string
   await evaluate(`document.activeElement.dispatchEvent(new KeyboardEvent('keydown', {key:'Escape',bubbles:true})); document.activeElement.dispatchEvent(new KeyboardEvent('keydown', {key:'Escape',bubbles:true}));`);
   window.webContents.send("state", waitingSnapshot);
   await waitFor(`document.querySelector('[data-job-id="${waitingId}"] .download-status')?.textContent.includes('Waiting')`, "waiting snapshot restored");
-  await evaluate(`(() => { const row = document.querySelector('[data-job-id="${waitingId}"]'); row.focus(); row.dispatchEvent(new KeyboardEvent('keydown', {key:'F10',shiftKey:true,bubbles:true})); })()`);
+  fixtureStage = "downloads-context-keyboard";
+  await evaluate(`(() => { const p=window.__contextSmoke;p.view='downloads';p.owner=${JSON.stringify(waitingId)};p.beforeResizes=p.resizes;p.beforeOutside=p.outsidePointers;const row = document.querySelector('[data-job-id="${waitingId}"]'); row.focus(); row.dispatchEvent(new KeyboardEvent('keydown', {key:'F10',shiftKey:true,bubbles:true}));p.opened=!!document.querySelector('.context-menu'); })()`);
   await evaluate(`document.querySelector('.context-menu [data-group="Recovery"]').click()`);
   const waitingRetry = await evaluate<boolean>(`document.querySelector('[data-context-action="downloads-retry"]')?.getAttribute('aria-disabled') === 'false'`);
   if (!waitingRetry) throw new Error("Waiting context menu Retry must be enabled.");
@@ -768,29 +776,33 @@ export async function runUiScenario(window: BrowserWindow, remote: { url: string
   await waitFor(`document.querySelector('[data-job-id="${waitingId}"]')?.classList.contains('selected') && document.querySelector('[data-context-action="downloads-retry"]')?.getAttribute('aria-disabled') === 'false'`, "waiting snapshot restores context Retry");
   await evaluate(`document.activeElement.dispatchEvent(new KeyboardEvent('keydown', {key:'Escape',bubbles:true})); document.activeElement.dispatchEvent(new KeyboardEvent('keydown', {key:'Escape',bubbles:true}));`);
   if (!await evaluate<boolean>(`document.activeElement?.dataset.jobId === ${JSON.stringify(waitingId)}`)) throw new Error("Escape must restore the invoking download row.");
-  await evaluate(`document.querySelector('[data-job-id="${waitingId}"] .row-more').click()`);
+  fixtureStage = "downloads-context-tab";
+  await evaluate(`(() => { const p=window.__contextSmoke;p.beforeResizes=p.resizes;p.beforeOutside=p.outsidePointers;document.querySelector('[data-job-id="${waitingId}"] .row-more').click();p.opened=!!document.querySelector('.context-menu'); })()`);
   window.webContents.focus();
   window.webContents.sendInputEvent({type:"keyDown",keyCode:"Tab"}); window.webContents.sendInputEvent({type:"keyUp",keyCode:"Tab"});
   await waitFor("!document.querySelector('.context-menu')", "Tab exits context menu");
   if (await evaluate<boolean>("document.activeElement === document.body")) throw new Error("Tab from context menu must preserve usable focus.");
   await capture("downloads-waiting-default", waitingId);
-  window.setSize(640, 560); await new Promise(resolve => setTimeout(resolve, 250));
+  fixtureStage = "downloads-context-narrow";
+  await resizeContextViewport(640, 560);
   await checkLayout("narrow waiting Downloads"); await capture("downloads-waiting-narrow", waitingId);
   const moreFits = await evaluate<boolean>(`(() => { const button = document.querySelector('[data-job-id="${waitingId}"] .row-more'); const cell = button?.parentElement; if (!button || !cell) return false; const b=button.getBoundingClientRect(), c=cell.getBoundingClientRect(); return b.width > 0 && b.left >= c.left && b.right <= c.right + 1; })()`);
   if (!moreFits) throw new Error("Download More control is clipped at narrow width.");
   const longNameFits = await evaluate<boolean>(`(() => { const button = document.querySelector('[data-job-id="${waitingId}"] .row-more'); const cell = button.parentElement; const text = [...cell.childNodes].find(n => n.nodeType === Node.TEXT_NODE); const original = text.textContent; text.textContent = 'a-very-long-filename-'.repeat(15) + '.bin'; const b=button.getBoundingClientRect(), c=cell.getBoundingClientRect(); const fits=b.width > 0 && b.left >= c.left && b.right <= c.right + 1; text.textContent=original; return fits; })()`);
   if (!longNameFits) throw new Error("Long download filename clips its More control.");
-  await evaluate(`document.querySelector('[data-job-id="${waitingId}"] .row-more').click(); document.querySelector('.context-menu [data-group="Recovery"]').click()`);
+  await evaluate(`(() => { const p=window.__contextSmoke;p.beforeResizes=p.resizes;p.beforeOutside=p.outsidePointers;document.querySelector('[data-job-id="${waitingId}"] .row-more').click();p.opened=!!document.querySelector('.context-menu');document.querySelector('.context-menu [data-group="Recovery"]').click(); })()`);
   await capture("context-downloads-narrow");
   const focus = await evaluate<boolean>(`(() => { const b = document.querySelector('#downloads-retry'); b.focus(); return document.activeElement === b; })()`);
   if (!focus) throw new Error("Waiting Retry cannot receive keyboard focus.");
-  window.setSize(892, 510); await new Promise(resolve => setTimeout(resolve, 250));
+  fixtureStage = "downloads-context-restored";
+  await resizeContextViewport(892, 510);
   releaseWaitingFixture();
-  await evaluate(`document.querySelector('[data-job-id="${waitingId}"] .row-more').click()`);
+  await evaluate(`(() => { const p=window.__contextSmoke;p.beforeResizes=p.resizes;p.beforeOutside=p.outsidePointers;document.querySelector('[data-job-id="${waitingId}"] .row-more').click();p.opened=!!document.querySelector('.context-menu'); })()`);
   await evaluate(`document.querySelector('.context-menu [data-group="Recovery"]').click()`);
   await evaluate(`document.querySelector('[data-context-action="downloads-retry"]').click()`);
   await waitFor(`window.putio.getState().then(s => s.jobs.some(j => j.id === ${JSON.stringify(waitingId)} && j.status === 'completed'))`, "waiting manual retry completed");
   if (await evaluate<number>(`window.putio.getState().then(s => s.jobs.filter(j => j.name === 'recovery-7.bin').length)`) !== 1) throw new Error("Retry duplicated the waiting row.");
+  fixtureStage = "scenario";
   for (const [id, control] of [[10, "#downloads-cancel"], [11, "#downloads-cancel-all"]] as const) {
     const jobId = await selectRecovery(id);
     if (id === 10) {
