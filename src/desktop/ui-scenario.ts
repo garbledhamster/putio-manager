@@ -1,6 +1,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { createHash } from "node:crypto";
 import type { BrowserWindow } from "electron";
 import { RemoteEngine } from "../remote/client";
 import { validateAccountLink } from "../shared";
@@ -16,8 +17,26 @@ export async function runUiScenario(window: BrowserWindow, remote: { url: string
     try { validateAccountLink(url); } catch { rejected = true; }
     if (!rejected) throw new Error("Unsafe account link was accepted.");
   }
-  const evaluate = <T>(expression: string): Promise<T> =>
-    window.webContents.executeJavaScript(expression) as Promise<T>;
+  let fixtureStage = "scenario";
+  const contextEvidence = async (): Promise<Record<string, number | boolean>> => {
+    try {
+      const raw = await window.webContents.executeJavaScript(`(() => { const p=window.__contextSmoke ?? {}; const row=document.querySelector('[data-file-id="'+(p.owner===2?'2':'0')+'"]'); return {width:innerWidth,height:innerHeight,opened:p.opened,menu:!!document.querySelector('.context-menu'),manage:!!document.querySelector('.context-menu [data-group="Manage"]'),ownerPresent:!!row,ownerSelected:!!row?.classList.contains('selected'),resizes:p.resizes ?? 0,outsidePointers:p.outsidePointers ?? 0,resizesSinceOpen:(p.resizes ?? 0)-(p.beforeResizes ?? 0),outsideSinceOpen:(p.outsidePointers ?? 0)-(p.beforeOutside ?? 0)}; })()`);
+      const safe: Record<string, number | boolean> = {};
+      for (const key of ["width", "height", "resizes", "outsidePointers", "resizesSinceOpen", "outsideSinceOpen"])
+        if (typeof raw?.[key] === "number" && Number.isFinite(raw[key]) && raw[key] >= 0 && raw[key] <= 100000) safe[key] = raw[key];
+      for (const key of ["opened", "menu", "manage", "ownerPresent", "ownerSelected"]) if (typeof raw?.[key] === "boolean") safe[key] = raw[key];
+      return safe;
+    } catch { return {}; }
+  };
+  const evaluate = async <T>(expression: string): Promise<T> => {
+    const caller = new Error().stack?.split("\n").find(line => /at (?:async )?runUiScenario /.test(line));
+    const line = Number(/ui-scenario\.(?:js|ts):(\d+):/.exec(caller ?? "")?.[1] ?? 0);
+    try { return await window.webContents.executeJavaScript(expression) as T; }
+    catch {
+      const expressionHash = createHash("sha256").update(expression).digest("hex").slice(0, 12);
+      throw new Error(`UI smoke script failed: stage=${fixtureStage}; callerLine=${line}; expressionHash=${expressionHash}; state=${JSON.stringify(await contextEvidence())}`);
+    }
+  };
   const waitFor = async (
     expression: string,
     description: string,
@@ -27,12 +46,21 @@ export async function runUiScenario(window: BrowserWindow, remote: { url: string
       if (await evaluate<boolean>(expression)) return;
       await new Promise<void>((resolve) => setTimeout(resolve, 100));
     }
+    if (description.includes(".context-menu")) throw new Error(`UI smoke context menu timed out: stage=${fixtureStage}; state=${JSON.stringify(await contextEvidence())}`);
     const error = await evaluate<string>(
       "document.querySelector('#notice')?.textContent || ''",
     );
     throw new Error(
       `UI smoke timed out waiting for ${description}. Notice: ${error}`,
     );
+  };
+  const resizeContextViewport = async (width: number, height: number): Promise<void> => {
+    window.setSize(width, height);
+    const [contentWidth, contentHeight] = window.getContentSize();
+    await waitFor(`innerWidth === ${contentWidth} && innerHeight === ${contentHeight}`, "renderer viewport matches native content bounds");
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try { await Promise.race([evaluate("new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))"), new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`UI smoke frame settlement timed out: stage=${fixtureStage}`)), 15000); })]); }
+    finally { if (timer) clearTimeout(timer); }
   };
   const click = async (selector: string): Promise<void> => {
     await waitFor(
@@ -337,7 +365,9 @@ export async function runUiScenario(window: BrowserWindow, remote: { url: string
     "Boolean(document.querySelector('[data-file-id=\"1\"]'))",
     "fixture folder",
   );
-  await evaluate(`document.querySelector('[data-file-id="0"]').dispatchEvent(new MouseEvent('contextmenu', {bubbles:true, clientX:30, clientY:180}))`);
+  fixtureStage = "files-context-root";
+  await evaluate(`(() => { const p=window.__contextSmoke={owner:0,resizes:0,outsidePointers:0,beforeResizes:0,beforeOutside:0}; window.addEventListener('resize',()=>{p.resizes=Math.min(1024,p.resizes+1)}); document.addEventListener('pointerdown',event=>{const menu=document.querySelector('.context-menu');if(menu&&!menu.contains(event.target))p.outsidePointers=Math.min(1024,p.outsidePointers+1)},true); })()`);
+  await evaluate(`(() => { const p=window.__contextSmoke;p.beforeResizes=p.resizes;p.beforeOutside=p.outsidePointers;document.querySelector('[data-file-id="0"]').dispatchEvent(new MouseEvent('contextmenu', {bubbles:true, clientX:30, clientY:180}));p.opened=!!document.querySelector('.context-menu'); })()`);
   const rootMenu = await evaluate<boolean>(`(() => { const menu = document.querySelector('.context-menu'); return !!menu && [...menu.querySelectorAll('[aria-haspopup="menu"]')].map(b => b.textContent.trim()).join(',').includes('Download') && [...menu.querySelectorAll('[aria-haspopup="menu"]')].every(b => b.querySelector('.ui-icon')); })()`);
   if (!rootMenu) throw new Error("Files root context menu must expose icon-labeled task groups.");
   await evaluate(`document.querySelector('.context-menu [data-group="Manage"]').click()`);
@@ -346,11 +376,13 @@ export async function runUiScenario(window: BrowserWindow, remote: { url: string
   if (!await evaluate<boolean>(`document.querySelector('[data-context-action="files-move"]')?.getAttribute('aria-disabled') === 'true'`))
     throw new Error("The root cannot be moved.");
   await capture("context-files-default");
-  window.setSize(640, 560); await new Promise(resolve => setTimeout(resolve, 250));
-  await evaluate(`document.querySelector('[data-file-id="0"] .row-more').click(); document.querySelector('.context-menu [data-group="Manage"]').click()`);
+  fixtureStage = "files-context-narrow";
+  await resizeContextViewport(640, 560);
+  await evaluate(`(() => { const p=window.__contextSmoke;p.beforeResizes=p.resizes;p.beforeOutside=p.outsidePointers;document.querySelector('[data-file-id="0"] .row-more').click();p.opened=!!document.querySelector('.context-menu');document.querySelector('.context-menu [data-group="Manage"]').click(); })()`);
   await capture("context-files-narrow");
-  window.setSize(892, 510); await new Promise(resolve => setTimeout(resolve, 250));
-  await evaluate(`document.querySelector('[data-file-id="0"] .row-more').click(); document.querySelector('.context-menu [data-group="Manage"]').click()`);
+  fixtureStage = "files-context-restored";
+  await resizeContextViewport(892, 510);
+  await evaluate(`(() => { const p=window.__contextSmoke;p.beforeResizes=p.resizes;p.beforeOutside=p.outsidePointers;document.querySelector('[data-file-id="0"] .row-more').click();p.opened=!!document.querySelector('.context-menu');document.querySelector('.context-menu [data-group="Manage"]').click(); })()`);
   await evaluate(`document.activeElement.dispatchEvent(new KeyboardEvent('keydown', {key:'Escape', bubbles:true}))`);
   await evaluate(`document.activeElement.dispatchEvent(new KeyboardEvent('keydown', {key:'Escape', bubbles:true}))`);
   await click('[data-file-id="1"]');
@@ -361,9 +393,11 @@ export async function runUiScenario(window: BrowserWindow, remote: { url: string
   );
   await capture("files-expanded-connected");
   await documentationCapture("04-browse-files");
-  await evaluate(`document.querySelector('[data-file-id="2"]').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: innerWidth - 4, clientY: innerHeight - 4 }))`);
+  fixtureStage = "files-context-file";
+  await evaluate(`(() => { const p=window.__contextSmoke;p.owner=2;p.beforeResizes=p.resizes;p.beforeOutside=p.outsidePointers;document.querySelector('[data-file-id="2"]').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: innerWidth - 4, clientY: innerHeight - 4 }));p.opened=!!document.querySelector('.context-menu'); })()`);
   await click('.context-menu [data-group="Manage"]');
   await click('[data-context-action="files-move"]');
+  fixtureStage = "files-move-picker";
   await click('.move-picker button[aria-label="Expand Projects"]');
   await waitFor(`Boolean(document.querySelector('[data-move-folder="31"]'))`, "nested move destinations");
   if (!await evaluate<boolean>(`document.querySelector('[data-move-folder="1"]').disabled && !document.querySelector('[data-move-folder="2"]')`))
@@ -405,6 +439,7 @@ export async function runUiScenario(window: BrowserWindow, remote: { url: string
   if (!await drag("31", "30")) throw new Error("A root folder must be draggable into another folder.");
   await waitFor(`document.querySelector('#notice').textContent.includes('to Projects') && window.putio.listFiles("30").then(files => files.some(file => file.id === "31"))`, "folder drag restores its original parent");
   window.setSize(892, 510);
+  fixtureStage = "scenario";
   await click('[data-file-id="1"]');
   await click("#nav-rules");
   await checkLayout("Rules");

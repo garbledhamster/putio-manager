@@ -30,7 +30,7 @@
     "release:checksums": "node scripts/release-checksums.mjs",
     "verify:public": "node scripts/verify-public-release.mjs source",
     "test:staged": "node --test tests/staged-delivery-tracer.test.cjs tests/staged-delivery-acceptance.test.cjs tests/staged-delivery-close.test.cjs tests/staged-delivery-helper.test.cjs && node --test tests/staged-delivery-resources.test.cjs && node --test tests/staged-delivery-engine-resources.test.cjs",
-    "test:ui-messages": "node --test tests/copy-messages.test.cjs",
+    "test:ui-messages": "node --test tests/copy-messages.test.cjs tests/ui-scenario-boundaries.test.cjs",
     "test:agent": "node --test tests/agent-cli.test.cjs tests/user-messages.test.cjs tests/user-error-rendering.test.cjs tests/storage-status.test.cjs tests/service-cli.test.cjs tests/launcher.test.cjs",
     "test:release": "node --test tests/release-pipeline.test.mjs tests/release-privacy.test.mjs tests/release-publication.test.mjs",
     "test:updates": "node --test tests/desktop-updates.test.cjs tests/platform-updates.test.cjs tests/windows-installer.test.cjs tests/windows-update-runtime.test.cjs tests/update-settings-renderer.test.cjs tests/update-cli.test.cjs"
