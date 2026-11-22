@@ -3,7 +3,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { buildWindowsInstallers, getWindowsInstallerIdentity, runTool, installerToolFailureStatus } from './build.mjs';
-import { auditWindowsInstallers, auditFailureStatus } from './audit.mjs';
+import { auditWindowsInstallers, auditFailureStatus, ensureAuditHelper } from './audit.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const fixtureStages=new Set(['build-a','build-b','build-failure','audit-a','audit-b','audit-failure','opposite-marker-create','opposite-install-refused','opposite-marker-remove','exe-a-install','assert-installed-a','msi-b-upgrade','assert-installed-b','msi-b-reinstall','msi-b-repair','downgrade-refused','upgrade-rollback','uninstall-b','msi-a-install','exe-b-upgrade']);
@@ -24,6 +24,15 @@ export function fixtureFailureStatus(stage,error) {
 export function summarizeFixtureRegistration(records,identity) {
   return {total:records.length,msi:records.filter(record=>record.windowsInstaller===true).length,burn:records.filter(record=>record.windowsInstaller!==true).length,hidden:records.filter(record=>record.hidden===true).length,expectedProduct:records.filter(record=>sameGuid(record.productCode,identity.productCode)).length,expectedVersion:records.filter(record=>record.version===identity.version).length};
 }
+export function summarizeFixtureBurnLog(content) {
+  return {packagePlanned:/Planned package: ApplicationMsi,/.test(content),plannedInstall:/Planned package: ApplicationMsi,[^\r\n]*execute: Install(?:,|\s|$)/.test(content),executedInstall:/Applying execute package: ApplicationMsi, action: Install(?:,|\s|$)/.test(content),executionSucceeded:/Applied execute package: ApplicationMsi, result: 0x0+(?:,|\s|$)/.test(content)};
+}
+export async function readFixtureProductCounts(helper,identity,runner=runTool) {
+  const result=await runner('dotnet',[helper,'--fixture-products',identity.productName,identity.productCode,identity.version]);
+  const products=JSON.parse(result.stdout),counts={};
+  for(const key of ['total','installed','perUser','machine','expectedProduct','expectedVersion']) if(Number.isSafeInteger(products?.[key])&&products[key]>=0)counts[key]=products[key];
+  return counts;
+}
 export function requireDisposableWindowsRunner(env = process.env,platform = process.platform) {
   if (platform !== 'win32' || env.GITHUB_ACTIONS !== 'true' || env.RUNNER_ENVIRONMENT !== 'github-hosted' || env.GITHUB_REPOSITORY !== 'garbledhamster/putio-manager' || !env.RUNNER_TEMP || !env.LOCALAPPDATA || !env.APPDATA) throw new Error('Native installer execution is restricted to disposable hosted repository CI.');
 }
@@ -42,9 +51,11 @@ export async function runNativeInstallerFixture() {
   const media = path.join(work,'synthetic-media');
   const sentinel = 'Generated fixture profile and media must survive installer servicing.\n';
   const products = [];
+  const burnLog=path.join(work,'generated-burn.log');
   let registered = false;
   let oppositeMarker = false;
   let stage='initialization';
+  let auditHelper;
   async function setOppositeMarker(operation) {
     await runTool(path.join(process.env.SystemRoot,'System32','WindowsPowerShell','v1.0','powershell.exe'),['-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',path.join(here,'fixture-opposite-architecture.ps1'),'-RegistrySubKey',a.oppositeRegistryKey,'-Operation',operation,'-GeneratedLocation',path.join(work,'synthetic-opposite-install')]);
     oppositeMarker = operation === 'create';
@@ -56,9 +67,12 @@ export async function runNativeInstallerFixture() {
     return result;
   }
   async function assertInstalled(identity) {
-    const {records,owner} = await inventory();
+    const {records,owner,machineRecords} = await inventory();
     if (records.length !== 1 || !records[0].windowsInstaller || records[0].hidden || !sameGuid(records[0].productCode,identity.productCode) || records[0].version !== identity.version) {
       console.error(JSON.stringify({schema:1,registration:summarizeFixtureRegistration(records,identity)}));
+      console.error(JSON.stringify({schema:1,installation:{ownerPresent:!!owner,executablePresent:await fs.access(path.join(installed,'PutioManager.exe')).then(()=>true,()=>false),machineRecords:Number.isSafeInteger(machineRecords)&&machineRecords>=0?machineRecords:0},burn:summarizeFixtureBurnLog(await fs.readFile(burnLog,'utf8').catch(()=>''))}));
+      const api=await readFixtureProductCounts(auditHelper,identity).catch(()=>({}));
+      console.error(JSON.stringify({schema:1,msiApi:api}));
       throw new Error('Fixture has duplicate, stale Burn, or incorrect MSI registration.');
     }
     if (!owner || owner.version !== identity.version || !sameGuid(owner.productCode,identity.productCode) || !owner.locationMatches) throw new Error('Fixture installed ownership registration is invalid.');
@@ -99,6 +113,7 @@ export async function runNativeInstallerFixture() {
       const audit = await auditWindowsInstallers({version:identity.version,arch,appDirectory,outputDirectory,fixture});
       await audit.cleanup(); products.push(result);
     }
+    auditHelper=await ensureAuditHelper();
     // A synthetic opposite-architecture ownership marker exercises AppSearch on
     // either native runner without requiring that host to execute the other CPU.
     stage='opposite-marker-create'; await setOppositeMarker('create');
@@ -109,7 +124,7 @@ export async function runNativeInstallerFixture() {
     await assertPreserved();
     stage='opposite-marker-remove'; await setOppositeMarker('remove');
     stage='exe-a-install';
-    await runTool(products[0].exe,['/quiet','/norestart']); registered = true;
+    await runTool(products[0].exe,['/quiet','/norestart','/log',burnLog]); registered = true;
     stage='assert-installed-a'; await assertInstalled(a);
     stage='msi-b-upgrade'; await msi(['/i',products[1].msi]);
     stage='assert-installed-b'; await assertInstalled(b);
@@ -122,7 +137,7 @@ export async function runNativeInstallerFixture() {
     stage='upgrade-rollback'; await msi(['/i',products[2].msi],[1603]); await assertInstalled(b);
     stage='uninstall-b'; await remove(b);
     stage='msi-a-install'; await msi(['/i',products[0].msi]); registered = true; await assertInstalled(a);
-    stage='exe-b-upgrade'; await runTool(products[1].exe,['/quiet','/norestart']); await assertInstalled(b);
+    stage='exe-b-upgrade'; await runTool(products[1].exe,['/quiet','/norestart','/log',burnLog]); await assertInstalled(b);
     stage='uninstall-b'; await remove(b);
     console.log('Verified disposable EXE/MSI upgrades, one MSI registration, repair, rollback, downgrade refusal and preserved generated data.');
     return {ok:true,arch,checks:['opposite-architecture-blocked-before-write','exe-to-msi','msi-to-exe','one-msi-registration','no-burn-registration','reinstall','repair','downgrade-refused','rollback','uninstall','profile-preserved','media-preserved']};

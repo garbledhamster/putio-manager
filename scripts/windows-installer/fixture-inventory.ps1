@@ -10,10 +10,16 @@ foreach ($root in @('HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall',
   }
 }
 $owner = $null
+$machineRecords = 0
+foreach ($root in @('HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall','HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall')) {
+  if (Test-Path -LiteralPath $root) {
+    $machineRecords += @(Get-ChildItem -LiteralPath $root | ForEach-Object { Get-ItemProperty -LiteralPath $_.PSPath } | Where-Object { $_.DisplayName -eq $ProductName }).Count
+  }
+}
 if (Test-Path -LiteralPath ('HKCU:\' + $RegistrySubKey)) {
   $stored = Get-ItemProperty -LiteralPath ('HKCU:\' + $RegistrySubKey)
   $matchesLocation = $false
   if ($stored.InstallLocation) { $matchesLocation = [IO.Path]::GetFullPath($stored.InstallLocation).TrimEnd('\') -eq [IO.Path]::GetFullPath($ExpectedLocation).TrimEnd('\') }
   $owner = [pscustomobject]@{ version = $stored.InstalledVersion; productCode = $stored.ProductCode; locationMatches = $matchesLocation }
 }
-ConvertTo-Json -InputObject ([pscustomobject]@{ records = @($records); owner = $owner }) -Compress -Depth 3
+ConvertTo-Json -InputObject ([pscustomobject]@{ records = @($records); owner = $owner; machineRecords = $machineRecords }) -Compress -Depth 3

@@ -7,6 +7,26 @@ using WixToolset.Dtf.WindowsInstaller.Package;
 
 // This program reads MSI tables/cabinets. It never opens an installation session,
 // executes a sequence, invokes msiexec, or runs a package custom action.
+if (args.Length == 4 && args[0] == "--fixture-products")
+{
+    try
+    {
+        if (Environment.GetEnvironmentVariable("GITHUB_ACTIONS") != "true" || Environment.GetEnvironmentVariable("RUNNER_ENVIRONMENT") != "github-hosted" || Environment.GetEnvironmentVariable("GITHUB_REPOSITORY") != "garbledhamster/putio-manager" || !System.Text.RegularExpressions.Regex.IsMatch(args[1],"^Putio Manager Fixture [a-f0-9]{12}$") || !Guid.TryParse(args[2],out var expectedProduct) || !Version.TryParse(args[3],out var expectedVersion)) throw new InvalidDataException();
+        // MsiEnumProductsEx uses the current user, never all users. Registry ARP
+        // paths alone do not establish Windows Installer product registration.
+        var products=ProductInstallation.GetProducts(null,null,UserContexts.All).Where(product=>product.AdvertisedProductName==args[1]).ToArray();
+        Console.WriteLine(JsonSerializer.Serialize(new {
+            total=products.Length,
+            installed=products.Count(product=>product.IsInstalled),
+            perUser=products.Count(product=>product.Context==UserContexts.UserManaged || product.Context==UserContexts.UserUnmanaged),
+            machine=products.Count(product=>product.Context==UserContexts.Machine),
+            expectedProduct=products.Count(product=>Guid.TryParse(product.ProductCode,out var code) && code==expectedProduct),
+            expectedVersion=products.Count(product=>product.ProductVersion==expectedVersion)
+        }));
+        return 0;
+    }
+    catch { Console.Error.WriteLine("INSTALLER_AUDIT_CODE=DTF_PROPERTIES_INVALID"); return 1; }
+}
 if (args.Length == 3 && args[0] == "--bootstrapper")
 {
     try

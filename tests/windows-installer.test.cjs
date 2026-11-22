@@ -149,12 +149,14 @@ test('tool failures disclose stable diagnostic codes without raw compiler or mac
 });
 
 test('native lifecycle diagnostics select only fixed stages and sanitized outcomes', async () => {
-  const {fixtureFailureStatus,summarizeFixtureRegistration}=await import('../scripts/windows-installer/native-fixture.mjs');
+  const {fixtureFailureStatus,summarizeFixtureRegistration,summarizeFixtureBurnLog}=await import('../scripts/windows-installer/native-fixture.mjs');
   assert.deepEqual(fixtureFailureStatus('exe-a-install',Error('generated-private')),{schema:1,fixtureStage:'exe-a-install',code:'fixture-failed'});
   assert.deepEqual(fixtureFailureStatus('generated-private',Error('generated-private')),{schema:1,fixtureStage:'initialization',code:'fixture-failed'});
   assert.deepEqual(fixtureFailureStatus('assert-installed-a',Error('Fixture has duplicate, stale Burn, or incorrect MSI registration.')),{schema:1,fixtureStage:'assert-installed-a',code:'registration-mismatch'});
   const identity={productCode:'GENERATED',version:'1.0.0'};
   assert.deepEqual(summarizeFixtureRegistration([{productCode:'{GENERATED}',version:'1.0.0',windowsInstaller:true,hidden:false},{productCode:'private-unexpected',version:'private-unexpected',windowsInstaller:false,hidden:true}],identity),{total:2,msi:1,burn:1,hidden:1,expectedProduct:1,expectedVersion:1});
+  assert.deepEqual(summarizeFixtureBurnLog('private-path\nPlanned package: ApplicationMsi, state: Absent, execute: Install, cache: Yes\nApplying execute package: ApplicationMsi, action: Install\nApplied execute package: ApplicationMsi, result: 0x0, restart: None'),{packagePlanned:true,plannedInstall:true,executedInstall:true,executionSucceeded:true});
+  assert.deepEqual(summarizeFixtureBurnLog('private-path'),{packagePlanned:false,plannedInstall:false,executedInstall:false,executionSucceeded:false});
 });
 
 test('native updater acceptance cannot execute on an operator machine', async () => {
@@ -169,6 +171,17 @@ test('actual updater fixture preserves PowerShell registry separators and saniti
   assert.ok(WINDOWS_PRODUCT_INVENTORY_SCRIPT.includes(String.raw`HKCU:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall`));
   assert.deepEqual(updateFixtureFailureStatus('controller-child',Error('generated-private')),{schema:1,updateFixtureStage:'controller-child',code:'update-fixture-failed'});
   assert.deepEqual(updateFixtureFailureStatus('generated-private',Error('generated-private')),{schema:1,updateFixtureStage:'initialization',code:'update-fixture-failed'});
+});
+
+test('native MSI registration diagnostics launch the managed helper through dotnet', async () => {
+  const {readFixtureProductCounts}=await import('../scripts/windows-installer/native-fixture.mjs');
+  const identity={productName:'Putio Manager Fixture generated',productCode:'generated-code',version:'1.0.0'};
+  const counts=await readFixtureProductCounts('generated-helper.dll',identity,async(command,args)=>{
+    assert.equal(command,'dotnet');
+    assert.deepEqual(args,['generated-helper.dll','--fixture-products',identity.productName,identity.productCode,identity.version]);
+    return {stdout:JSON.stringify({total:1,installed:1,perUser:1,machine:0,expectedProduct:1,expectedVersion:1,private:'generated-private'})};
+  });
+  assert.deepEqual(counts,{total:1,installed:1,perUser:1,machine:0,expectedProduct:1,expectedVersion:1});
 });
 
 test('audit failures expose only allowlisted stages, invariant codes and compiler/API codes', async () => {

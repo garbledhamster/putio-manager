@@ -348,11 +348,22 @@ function bindHandlers() {
   bind("openTokenPage", () => shell.openExternal("https://app.put.io/settings/account"));
 }
 let updaterPromise:Promise<DesktopUpdater>|undefined;
+let cliHandoffAcknowledged=false;
 function desktopUpdater():Promise<DesktopUpdater>{
   return updaterPromise??= (async()=>{
     const context:NativeUpdateContext={platform:process.platform,arch:process.arch,currentVersion:app.getVersion(),isPackaged:app.isPackaged,resourcesDirectory:process.resourcesPath,applicationDirectory:process.platform==='darwin'?path.resolve(path.dirname(process.execPath),'..','..'):path.dirname(process.execPath),executablePath:process.execPath,userDataDirectory:app.getPath('userData'),quitApplication:()=>{quitting=true;if(!appUpdateMode)app.quit()}};
     const fakeVersion=app.getVersion().split('.').map((value,index)=>index===2?String(Number(value)+1):value).join('.');
-    const adapter:DesktopUpdateAdapter=smoke?{supported:true,prepare:async(_release,signal,progress)=>{for(const percent of[0,42,100]){if(signal.aborted)throw new DesktopUpdateFailure('installer-cancelled');progress({phase:'downloading',percent});await new Promise(resolve=>setTimeout(resolve,50));}throw new DesktopUpdateFailure('signature-invalid')},handoff:async()=>{throw new Error('Smoke tests must never hand off an installer.')}}:process.platform==='win32'?createWindowsUpdateAdapter(context):createNativeUpdateAdapter(context);
+    const nativeAdapter:DesktopUpdateAdapter=smoke?{supported:true,prepare:async(_release,signal,progress)=>{for(const percent of[0,42,100]){if(signal.aborted)throw new DesktopUpdateFailure('installer-cancelled');progress({phase:'downloading',percent});await new Promise(resolve=>setTimeout(resolve,50));}throw new DesktopUpdateFailure('signature-invalid')},handoff:async()=>{throw new Error('Smoke tests must never hand off an installer.')}}:process.platform==='win32'?createWindowsUpdateAdapter(context):createNativeUpdateAdapter(context);
+    const adapter:DesktopUpdateAdapter=process.platform==='darwin'&&!smoke?{
+      supported:nativeAdapter.supported,
+      prepare:(...args)=>nativeAdapter.prepare(...args),cancel:()=>nativeAdapter.cancel?.()??Promise.resolve(),
+      handoff:async prepared=>{
+        // Sparkle can terminate this CLI host itself. Flush its one controlled
+        // acknowledgement before any native installer is allowed to start.
+        if(appUpdateMode){const value=publicUpdateStatus((await desktopUpdater()).status());process.stdout.write(JSON.stringify({ok:true,accepted:true,value})+'\n');await flushCliOutput();cliHandoffAcknowledged=true;}
+        await nativeAdapter.handoff(prepared);
+      }
+    }:nativeAdapter;
     return new DesktopUpdater({currentVersion:context.currentVersion,platform:context.platform,arch:context.arch,adapter,previousOutcome:!smoke&&process.platform==='win32'?await readWindowsUpdateOutcome(context.userDataDirectory,context.currentVersion):undefined,
       ...(smoke?{releaseCheck:async()=>{const platform=process.platform==='win32'?'windows':process.platform==='darwin'?'macos':'linux';return{version:fakeVersion,platform,arch:process.arch as 'x64'|'arm64',asset:{name:'generated-fixture',url:'https://github.com/garbledhamster/putio-manager/releases/download/generated/fixture',bytes:1,sha256:'0'.repeat(64)},assets:[]}}}:{}),
       onStatus:status=>{if(window&&!window.isDestroyed()){window.webContents.send('desktop-update-status',publicUpdateStatus(status));if(updatePreparing&&status.phase==='failed')publish(unavailable('The desktop stopped for an update. Restart Putio Manager before you start more work.'))}},
@@ -394,9 +405,9 @@ async function runUpdateCli():Promise<void>{
       await removeUpdateRequest(directory,id);
       if(action!=='install')app.releaseSingleInstanceLock();
       else app.on('second-instance',(_event,_args,_cwd,data)=>{if(data&&Object.hasOwn(data,'putioUpdateRequest'))dispatchUpdateRequest((data as {putioUpdateRequest?:unknown}).putioUpdateRequest)});
-      const result=await performUpdateAction(await desktopUpdater(),action);process.stdout.write(JSON.stringify(result)+'\n');exitCode=result.ok?0:1;
+      const result=await performUpdateAction(await desktopUpdater(),action);if(!cliHandoffAcknowledged)process.stdout.write(JSON.stringify(result)+'\n');exitCode=result.ok?0:1;
     }
-  }catch(error){process.stdout.write(JSON.stringify(updateCliFailure(error))+'\n')}
+  }catch(error){if(!cliHandoffAcknowledged)process.stdout.write(JSON.stringify(updateCliFailure(error))+'\n')}
   finally{await Promise.allSettled([...updateRequests]);await flushCliOutput();quitting=true;app.exit(exitCode)}
 }
 app.whenReady().then(async () => {
