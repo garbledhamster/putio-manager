@@ -11,12 +11,14 @@ export async function buildLinuxUpdate() {
 }
 export async function packageLinuxApplication({ packaged, version, outputDirectory, fixtureFeed }) {
   if (process.platform !== 'linux' || process.env.CI !== 'true') throw new Error('Build AppImages on a disposable native Linux CI runner.');
+  if (!['x64', 'arm64'].includes(process.arch)) throw new Error('Unsupported AppImage architecture.');
   if (fixtureFeed && (!packaged.includes(`${path.sep}native-update-fixture${path.sep}`) || !/^http:\/\/127\.0\.0\.1:\d+\/$/.test(fixtureFeed))) throw new Error('Fixture feeds require an isolated loopback CI build.');
   const require = createRequire(import.meta.url);
   await readFile(path.join(packaged, 'resources', 'app', 'dist', 'desktop', 'platform-updates.js'));
   await mkdir('release/native-updater/linux', { recursive: true }); await mkdir(outputDirectory, { recursive: true });
   const stagedOutput = path.resolve(`release/native-updater/linux/output-${process.arch}-${version}`);
-  const configuration = { appId: 'space.ourstuff.putiomanager', productName: 'PutioManager', executableName: 'PutioManager', extraMetadata: { version }, buildVersion: version, directories: { output: stagedOutput }, publish: fixtureFeed ? [{ provider: 'generic', url: fixtureFeed }] : [{ provider: 'github', owner: 'garbledhamster', repo: 'putio-manager' }], linux: { target: ['AppImage'], artifactName: `PutioManager-${version}-linux-\${arch}.AppImage`, executableName: 'PutioManager', category: 'Network', icon: 'src/ui/branding/putio-manager.png' }, appImage: { executableArgs: ['--enable-sandbox'] } };
+  // AppImage's ${arch} builder macro uses x86_64; our release contract uses Node's x64.
+  const configuration = { appId: 'space.ourstuff.putiomanager', productName: 'PutioManager', executableName: 'PutioManager', extraMetadata: { version }, buildVersion: version, directories: { output: stagedOutput }, publish: fixtureFeed ? [{ provider: 'generic', url: fixtureFeed }] : [{ provider: 'github', owner: 'garbledhamster', repo: 'putio-manager' }], linux: { target: ['AppImage'], artifactName: `PutioManager-${version}-linux-${process.arch}.AppImage`, executableName: 'PutioManager', category: 'Network', icon: 'src/ui/branding/putio-manager.png' }, appImage: { executableArgs: ['--enable-sandbox'] } };
   const file = path.resolve('release/native-updater/linux/builder.json'); await writeFile(file, JSON.stringify(configuration));
   const bin = path.join(path.dirname(require.resolve('electron-builder/package.json')), 'cli.js');
   const result = spawnSync(process.execPath, [bin, '--linux', 'AppImage', `--${process.arch}`, '--prepackaged', packaged, '--config', file, '--publish', 'never'], { stdio: 'inherit', shell: false });

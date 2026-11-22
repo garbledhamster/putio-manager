@@ -21,6 +21,9 @@ export async function buildMacUpdater() {
   await patchSparkleSource(source);
   run('xcodebuild', ['-version']);
   run('xcodebuild', ['-project', 'Sparkle.xcodeproj', '-scheme', 'Distribution', '-configuration', 'Release', '-derivedDataPath', derived, '-disableAutomaticPackageResolution', '-onlyUsePackageVersionsFromResolvedFile', `ARCHS=${process.arch === 'arm64' ? 'arm64' : 'x86_64'}`, 'ONLY_ACTIVE_ARCH=NO', 'CODE_SIGN_IDENTITY=-', 'build'], source);
+  // Distribution builds the framework and signing tools, but excludes sparkle-cli.
+  // Build that separate upstream scheme so the copied helper includes our callbacks.
+  run('xcodebuild', ['-project', 'Sparkle.xcodeproj', '-scheme', 'sparkle-cli', '-configuration', 'Release', '-derivedDataPath', derived, '-disableAutomaticPackageResolution', '-onlyUsePackageVersionsFromResolvedFile', `ARCHS=${process.arch === 'arm64' ? 'arm64' : 'x86_64'}`, 'ONLY_ACTIVE_ARCH=NO', 'CODE_SIGN_IDENTITY=-', 'build'], source);
   const products = path.join(derived, 'Build', 'Products', 'Release');
   await cp(path.join(products, 'sparkle.app'), path.join(root, 'sparkle.app'), { recursive: true, verbatimSymlinks: true });
   for (const tool of ['sign_update', 'generate_keys']) await cp(path.join(products, tool), path.join(root, tool));

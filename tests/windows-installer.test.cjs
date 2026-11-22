@@ -165,6 +165,22 @@ test('audit failures expose only allowlisted stages, invariant codes and compile
   await assert.rejects(auditStage('generated-private-stage',()=>{}),/Unknown installer audit stage/);
 });
 
+test('MSI reconstruction accepts a canonical trusted-root alias and rejects escaping files and targets', async t => {
+  const {reconstructInspectedPayload}=await import('../scripts/windows-installer/audit.mjs');
+  const root=await fs.mkdtemp(path.join(os.tmpdir(),'installer-alias-unit-'));
+  t.after(()=>fs.rm(root,{recursive:true,force:true}));
+  const source=path.join(root,'source'),alias=path.join(root,'alias');
+  await fs.mkdir(source); await fs.writeFile(path.join(source,'generated.exe'),'generated fixture bytes');
+  await fs.symlink(source,alias,process.platform==='win32'?'junction':'dir');
+  const actual=await fs.realpath(path.join(source,'generated.exe'));
+  await reconstructInspectedPayload({inspection:{files:[{source:actual,path:'PutioManager.exe'}]},sourceDirectory:alias,payloadDirectory:path.join(root,'accepted')});
+  assert.equal(await fs.readFile(path.join(root,'accepted/PutioManager.exe'),'utf8'),'generated fixture bytes');
+  const outside=path.join(root,'outside.exe');await fs.writeFile(outside,'generated outside bytes');
+  await assert.rejects(reconstructInspectedPayload({inspection:{files:[{source:outside,path:'PutioManager.exe'}]},sourceDirectory:alias,payloadDirectory:path.join(root,'rejected-source')}),/escaped/);
+  await assert.rejects(reconstructInspectedPayload({inspection:{files:[{source:actual,path:'../outside-target.exe'}]},sourceDirectory:alias,payloadDirectory:path.join(root,'rejected-target')}),/escaped/);
+  assert.equal(await fs.access(path.join(root,'outside-target.exe')).then(()=>true,()=>false),false);
+});
+
 test('bootstrapper metadata has a fixed pinned resource inventory and the exact MSI servicing identity', async () => {
   const {getWindowsInstallerIdentity,installerAssetNames}=await moduleUnderTest();
   const {validateBootstrapperInspection,WIX_BOOTSTRAPPER_FILES}=await import('../scripts/windows-installer/audit.mjs');

@@ -112,13 +112,30 @@ async function regularFiles(root) {
   }
   await visit(root); return files;
 }
+export async function reconstructInspectedPayload({inspection,sourceDirectory,payloadDirectory}) {
+  const sourceRoot=await fs.realpath(sourceDirectory);
+  await fs.mkdir(payloadDirectory);
+  const targetRoot=await fs.realpath(payloadDirectory);
+  for(const file of inspection.files) {
+    const info=await fs.lstat(file.source);
+    if(!info.isFile()||info.isSymbolicLink()) throw new Error('Extracted MSI source is not a regular file.');
+    const source=await fs.realpath(file.source);
+    const relativeSource=path.relative(sourceRoot,source);
+    if(!relativeSource || path.isAbsolute(relativeSource) || relativeSource==='..' || relativeSource.startsWith(`..${path.sep}`)) throw new Error('Extracted MSI source escaped its audit directory.');
+    const target=path.resolve(targetRoot,file.path);
+    const relativeTarget=path.relative(targetRoot,target);
+    if(!relativeTarget || path.isAbsolute(relativeTarget) || relativeTarget==='..' || relativeTarget.startsWith(`..${path.sep}`)) throw new Error('Extracted MSI target escaped its audit directory.');
+    await fs.mkdir(path.dirname(target),{recursive:true});
+    await fs.copyFile(source,target);
+  }
+}
 export async function auditWindowsInstallers({version,arch,appDirectory,outputDirectory,toolsDirectory,fixture,verifyPayload,verifyBootstrapper}) {
   if (process.platform !== 'win32') throw new Error('Read-only Windows installer auditing requires Windows.');
   const identity = getWindowsInstallerIdentity({version,arch,family:fixture?.family});
   const expectedManifest = await auditStage('application-manifest',()=>createPayloadManifest(appDirectory));
   const names = installerAssetNames(version,arch);
   const msi = path.resolve(outputDirectory,names.msi), exe = path.resolve(outputDirectory,names.exe);
-  const work = await fs.mkdtemp(path.join(os.tmpdir(),'putio-installer-audit-'));
+  const work = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(),'putio-installer-audit-')));
   let succeeded = false;
   try {
     const {executable} = await auditStage('toolchain',()=>ensureWix(toolsDirectory));
@@ -148,16 +165,7 @@ export async function auditWindowsInstallers({version,arch,appDirectory,outputDi
     const inspection = await auditStage('msi-read',()=>inspectMsi({msi,outputDirectory:path.join(work,'msi'),toolsDirectory,helper}));
     await auditStage('msi-metadata',()=>validateMsiInspection({inspection,identity,expectedManifest,fixture}));
     const payloadDirectory = path.join(work,'application');
-    await auditStage('payload-reconstruction',async()=>{
-      await fs.mkdir(payloadDirectory);
-      for (const file of inspection.files) {
-        const source = path.resolve(file.source), sourceRoot = path.resolve(work,'msi','files');
-        if (!source.startsWith(`${sourceRoot}${path.sep}`)) throw new Error('Extracted MSI source escaped its audit directory.');
-        const target = path.join(payloadDirectory,file.path);
-        await fs.mkdir(path.dirname(target),{recursive:true});
-        await fs.copyFile(source,target);
-      }
-    });
+    await auditStage('payload-reconstruction',()=>reconstructInspectedPayload({inspection,sourceDirectory:path.join(work,'msi','files'),payloadDirectory}));
     await auditStage('payload-comparison',async()=>comparePayloadManifests(expectedManifest,await createPayloadManifest(payloadDirectory)));
     if (verifyPayload) await auditStage('payload-privacy',()=>verifyPayload(payloadDirectory));
     succeeded = true;
