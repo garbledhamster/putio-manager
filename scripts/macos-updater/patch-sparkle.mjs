@@ -107,6 +107,13 @@ ${check}`);
     }
 }
 - (void)startUpdater SPU_OBJC_DIRECT`);
+  const startup = '- (void)startUpdater SPU_OBJC_DIRECT\n{';
+  if (source.split(startup).length !== 2) throw new Error('Pinned Sparkle authorization boundary did not match.');
+  source = source.replace(startup, `${startup}
+    if (![NSProcessInfo.processInfo.environment[@"PUTIO_UPDATER_AUTHORIZED"] isEqualToString:@"1"]) {
+        putioEmit(@{@"phase": @"failed", @"code": @"installer-cancelled"});
+        exit(EXIT_FAILURE);
+    }`);
   const completion = '    if (error == nil) {\n        if (_verbose) {';
   if (!source.includes(completion)) throw new Error('Pinned Sparkle completion did not match.');
   source = source.replace(completion, `    if (error != nil) {
@@ -132,6 +139,18 @@ ${check}`);
 ${completion}`);
   return source;
 }
+export function patchHelperInfoPlist(source) {
+  const broad = /<key>NSAppTransportSecurity<\/key>\s*<dict>\s*<key>NSAllowsArbitraryLoads<\/key>\s*<true\/>\s*<\/dict>/;
+  if (source.split(broad).length !== 2) throw new Error('Pinned Sparkle transport policy did not match.');
+  // macOS 14+ requires an exact IP exception. No LAN, wildcard or global bypass.
+  return source.replace(broad, `<key>NSAppTransportSecurity</key>
+    <dict><key>NSExceptionDomains</key><dict>
+        <key>127.0.0.1</key><dict>
+            <key>NSIncludesSubdomains</key><false/>
+            <key>NSExceptionAllowsInsecureHTTPLoads</key><true/>
+        </dict>
+    </dict></dict>`);
+}
 export async function patchSparkleSource(directory) {
   const driver = path.join(directory, 'sparkle-cli', 'SPUCommandLineUserDriver.m');
   await writeFile(driver, patchUserDriver(await readFile(driver, 'utf8')));
@@ -142,5 +161,5 @@ export async function patchSparkleSource(directory) {
   if (!original.includes('PRODUCT_BUNDLE_IDENTIFIER = org.sparkle-project.sparkle-cli')) throw new Error('Pinned Sparkle identity did not match.');
   await writeFile(config, original.replace('PRODUCT_BUNDLE_IDENTIFIER = org.sparkle-project.sparkle-cli', 'PRODUCT_BUNDLE_IDENTIFIER = space.ourstuff.putiomanager.updater'));
   const plist = path.join(directory, 'sparkle-cli', 'Info.plist');
-  await writeFile(plist, (await readFile(plist, 'utf8')).replace(/\s*<key>NSAppTransportSecurity<\/key>\s*<dict>\s*<key>NSAllowsArbitraryLoads<\/key>\s*<true\/>\s*<\/dict>/, ''));
+  await writeFile(plist, patchHelperInfoPlist(await readFile(plist, 'utf8')));
 }

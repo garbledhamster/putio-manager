@@ -17,7 +17,7 @@ import { runAgentCommand, safeAgentError } from "../server/agent-cli";
 import { readSettingsInput } from "../server/cli-input";
 import {DesktopUpdater} from './app-updates';
 import {createWindowsUpdateAdapter,readWindowsUpdateOutcome} from './windows-updates';
-import {createNativeUpdateAdapter} from './platform-updates';
+import {createNativeUpdateAdapter,readNativeUpdateOutcome} from './platform-updates';
 import {DesktopUpdateFailure} from './update-errors';
 import type {DesktopUpdateAdapter,NativeUpdateContext} from './update-types';
 import {updateAction,performUpdateAction,publicUpdateStatus,updateCliFailure} from './update-cli';
@@ -364,7 +364,8 @@ function desktopUpdater():Promise<DesktopUpdater>{
         await nativeAdapter.handoff(prepared);
       }
     }:nativeAdapter;
-    return new DesktopUpdater({currentVersion:context.currentVersion,platform:context.platform,arch:context.arch,adapter,previousOutcome:!smoke&&process.platform==='win32'?await readWindowsUpdateOutcome(context.userDataDirectory,context.currentVersion):undefined,
+    const previousOutcome=smoke?undefined:await (process.platform==='win32'?readWindowsUpdateOutcome:readNativeUpdateOutcome)(context.userDataDirectory,context.currentVersion);
+    return new DesktopUpdater({currentVersion:context.currentVersion,platform:context.platform,arch:context.arch,adapter,previousOutcome,
       ...(smoke?{releaseCheck:async()=>{const platform=process.platform==='win32'?'windows':process.platform==='darwin'?'macos':'linux';return{version:fakeVersion,platform,arch:process.arch as 'x64'|'arm64',asset:{name:'generated-fixture',url:'https://github.com/garbledhamster/putio-manager/releases/download/generated/fixture',bytes:1,sha256:'0'.repeat(64)},assets:[]}}}:{}),
       onStatus:status=>{if(window&&!window.isDestroyed()){window.webContents.send('desktop-update-status',publicUpdateStatus(status));if(updatePreparing&&status.phase==='failed')publish(unavailable('The desktop stopped for an update. Restart Putio Manager before you start more work.'))}},
       beforeInstall:async()=>{

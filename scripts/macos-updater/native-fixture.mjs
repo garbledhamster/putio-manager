@@ -20,9 +20,9 @@ export async function prepareFixtureApplication(source, target, version) {
   // Embed only this disposable fixture's configuration locator in its generated entry.
   const configurationFile = path.join(process.platform === 'darwin' ? path.resolve(target, '../..') : path.resolve(target, '..'), 'configuration.json');
   await writeFile(path.join(appDirectory, manifest.main), `
-const fs = require('node:fs/promises'), path = require('node:path'), { spawn } = require('node:child_process');
+const fs = require('node:fs/promises'), path = require('node:path');
 const { app, BrowserWindow } = require('electron');
-const { createNativeUpdateAdapter } = require('./platform-updates');
+const { createNativeUpdateAdapter, readNativeUpdateOutcome } = require('./platform-updates');
 const { createEngine } = require('../engine/engine');
 const configuration = JSON.parse(require('node:fs').readFileSync(process.env.PUTIO_NATIVE_FIXTURE_CONFIG || ${JSON.stringify(configurationFile)}, 'utf8'));
 app.setPath('userData', configuration.profile);
@@ -35,14 +35,13 @@ app.whenReady().then(async () => {
     const snapshot = await engine.getSnapshot();
     if (snapshot.settings.speedLimitBytesPerSecond !== 12345 || await fs.readFile(path.join(configuration.profile, 'profile-marker'), 'utf8') !== 'preserved') throw Error('Fixture profile was not preserved.');
     if (await fs.readFile(path.join(configuration.profile, 'engine-closed'), 'utf8') !== 'closed') throw Error('Handoff occurred before fixture engine closure.');
-    await engine.close(); await fs.writeFile(configuration.result, JSON.stringify({ ok: true, version: app.getVersion(), profilePreserved: true, engineClosed: true })); app.quit(); return;
+    if ((await readNativeUpdateOutcome(configuration.profile, app.getVersion()))?.phase !== 'updated') throw Error('Fixture update outcome was not recovered.');
+    await engine.close(); await fs.writeFile(configuration.result, JSON.stringify({ ok: true, version: app.getVersion(), profilePreserved: true, engineClosed: true, outcomeRecovered: true })); app.quit(); return;
   }
   await engine.execute('saveSettings', [{ speedLimitBytesPerSecond: 12345 }]);
   await fs.writeFile(path.join(configuration.profile, 'profile-marker'), 'preserved');
   const context = { platform: process.platform, arch: process.arch, currentVersion: app.getVersion(), isPackaged: app.isPackaged, resourcesDirectory: process.resourcesPath, applicationDirectory: process.platform === 'darwin' ? path.resolve(process.execPath, '../../..') : path.dirname(process.execPath), executablePath: process.execPath, userDataDirectory: configuration.profile, quitApplication: () => app.quit() };
-  const dependencies = process.platform === 'linux' ? { fetcher: async (_url, options) => fetch(configuration.archiveURL, { signal: options.signal }) } : {
-    spawn: (executable, args, options) => spawn(executable, [...args, '--feed-url', configuration.feed], { ...options, env: { ...options.env, PUTIO_UPDATER_EXPECTED_URL: configuration.archiveURL } })
-  };
+  const dependencies = { fetcher: async (_url, options) => fetch(configuration.archiveURL, { signal: options.signal }) };
   const adapter = createNativeUpdateAdapter(context, dependencies);
   const prepared = await adapter.prepare(configuration.release, new AbortController().signal, () => {});
   // Exercise the exact engine-close contract before granting the native READY gate.
@@ -55,7 +54,7 @@ app.whenReady().then(async () => {
 export async function waitForFixtureResult(filename, milliseconds = 180000) {
   const deadline = Date.now() + milliseconds;
   while (Date.now() < deadline) {
-    try { const value = JSON.parse(await readFile(filename, 'utf8')); if (!value.ok || !value.profilePreserved || !value.engineClosed) throw new Error('Native update did not preserve its fixture.'); return value; }
+    try { const value = JSON.parse(await readFile(filename, 'utf8')); if (!value.ok || !value.profilePreserved || !value.engineClosed || !value.outcomeRecovered) throw new Error('Native update did not preserve its fixture.'); return value; }
     catch (error) { if (error.code !== 'ENOENT') throw error; }
     await new Promise(resolve => setTimeout(resolve, 250));
   }

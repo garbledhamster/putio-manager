@@ -142,3 +142,21 @@ test('download is exclusively staged, verified and rejects corruption without re
  await assert.rejects(downloadUpdateAsset(asset,declaredDir,signal,()=>{},async()=>new Response(f.payload,{headers:{'content-length':'99999'}})));
  assert.deepEqual(await fs.readdir(declaredDir),[]);
 });
+test('failed transfer cleanup preserves substituted files, directories and unknown contents',async t=>{
+ const temporary=await fs.mkdtemp(path.join(os.tmpdir(),'putio-transfer-ownership-'));
+ t.after(()=>fs.rm(temporary,{recursive:true,force:true}));
+ for(const kind of ['file','directory','unknown']){
+  const f=feed(),directory=await privateUpdateDirectory(temporary,'windows-'),filename=path.join(directory,'verified-update.msi');let sentinel,renameBlocked=false;
+  await assert.rejects(downloadUpdateAsset({...f.item,url:f.base+f.item.name},directory,controller().signal,()=>{},async()=>{
+   if(kind==='directory'){try{await fs.rename(directory,path.join(temporary,'retained-'+kind))}catch(error){if(process.platform==='win32'&&['EPERM','EACCES'].includes(error.code)){renameBlocked=true;throw error}throw error}await fs.mkdir(directory)}
+   if(kind==='file')await fs.rename(filename,path.join(temporary,'retained-'+kind));
+   if(kind!=='unknown')await fs.writeFile(filename,'foreign generated payload');
+   sentinel=path.join(directory,'unknown-sentinel');await fs.writeFile(sentinel,'generated sentinel');
+   throw Error('generated transfer failure');
+  }));
+  if(renameBlocked){t.diagnostic('Windows refused renaming an open transfer directory; substitution regression runs on native Linux/macOS CI.');continue}
+  assert.equal(await fs.readFile(sentinel,'utf8'),'generated sentinel');
+  if(kind!=='unknown')assert.equal(await fs.readFile(filename,'utf8'),'foreign generated payload');
+  else await assert.rejects(fs.access(filename));
+ }
+});

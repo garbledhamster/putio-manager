@@ -55,7 +55,7 @@ async function mainFixture(t,args,{primary=false,updaterFactory,previousOutcome,
   if(name==='../engine/engine')return{createEngine:forbidden,EngineStartupFailure:class extends Error{}};
   if(name==='../remote/client')return{RemoteEngine:forbidden};
   if(name==='./windows-updates')return{createWindowsUpdateAdapter:()=>({supported:true,prepare:forbidden,handoff:forbidden}),readWindowsUpdateOutcome:async()=>previousOutcome};
-  if(name==='./platform-updates'&&nativeAdapterFactory)return{createNativeUpdateAdapter:()=>nativeAdapterFactory({app,calls,outputs}),readNativeUpdateOutcome:async()=>previousOutcome};
+  if(name==='./platform-updates')return{createNativeUpdateAdapter:()=>nativeAdapterFactory?nativeAdapterFactory({app,calls,outputs}):({supported:true,prepare:forbidden,handoff:forbidden}),readNativeUpdateOutcome:async()=>previousOutcome};
   if(name==='./app-updates'&&updaterFactory)return{DesktopUpdater:class{constructor(options){return updaterFactory({root,app,calls,options})}}};
   return actualRequire(name);
  }};
@@ -68,6 +68,13 @@ test('real main exposes authoritative running version successfully when a previo
  const result=await mainFixture(t,['--app-update','status'],{previousOutcome:{phase:'failed',errorCode:'installer-failed'}});
  const output=JSON.parse(result.output);assert.equal(output.ok,true);assert.equal(output.value.phase,'failed');assert.equal(output.value.currentVersion,'2.2.0');assert.equal(output.value.errorCode,'installer-failed');assert.equal(result.calls.at(-1)[1],0);
 });
+test('real main recovers controlled Mac and Linux outcomes without account or engine access',async t=>{
+ for(const platform of ['darwin','linux'])for(const previousOutcome of [{phase:'updated'},{phase:'failed',errorCode:'signature-invalid'},{phase:'restart-required',errorCode:'restart-required'}]){
+  const result=await mainFixture(t,['--app-update','status'],{platform,previousOutcome});
+  const output=JSON.parse(result.output);assert.equal(output.ok,true);assert.equal(output.value.phase,previousOutcome.phase==='restart-required'?'failed':previousOutcome.phase);assert.equal(output.value.restartRequired,previousOutcome.phase==='restart-required');assert.equal(output.value.currentVersion,'2.2.0');assert.equal(output.value.errorCode,previousOutcome.errorCode);assert.ok(!result.calls.some(call=>call[0]==='forbidden'));
+ }
+});
+
 test('standalone CLI native handoff failure never probes GUI credential storage',async t=>{
  const result=await mainFixture(t,['--app-update','install'],{updaterFactory:({options})=>new DesktopUpdater({...options,
   releaseCheck:async()=>({version:'2.3.0',platform:'windows',arch:'x64',asset:{name:'generated',url:'generated',bytes:1,sha256:'0'.repeat(64)},assets:[]}),

@@ -512,7 +512,7 @@ For an AppImage, run from its folder. Replace the filename if yours differs:
 ./PutioManager-2.2.0-linux-x64.AppImage --app-update cancel
 ```
 
-Run one command at a time. `status` reads the current update state; `check` requests a fresh release check. `install` authorizes the desktop restart after verification. When a desktop process is already running, it handles the request; an `accepted` response confirms the request, not a finished installation. `cancel` requests cancellation before preparation. Check `status` for the result. The installed version after restart is the completion check.
+Run one command at a time. `status` reads the current update state; `check` requests a fresh release check. `install` authorizes the desktop restart after verification. When a desktop process is already running, it handles the request. An `accepted` response confirms the request. Installation can still be in progress. On macOS, the command also sends this response before the native installer restarts the app. `cancel` requests cancellation before preparation. After restart, run `status` again and check the installed version to confirm the result.
 
 ### Manual portable desktop replacement
 

@@ -37,6 +37,7 @@ export async function downloadUpdateAsset(asset: VerifiedUpdateAsset, directory:
   const available = Number(space.bavail) * Number(space.bsize);
   if (!Number.isSafeInteger(available) || available < asset.bytes + 128 * 1024 ** 2) throw new DesktopUpdateFailure("storage-unavailable");
   const filename = path.join(directory, "verified-update.msi");
+  const canonicalDirectory = await fs.realpath(directory), parentPath = path.dirname(directory), parent = await fs.lstat(parentPath);
   const handle = await fs.open(filename, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | (constants.O_NOFOLLOW ?? 0), 0o600);
   let successful = false;
   try {
@@ -66,7 +67,18 @@ export async function downloadUpdateAsset(asset: VerifiedUpdateAsset, directory:
     if (!actual.isFile() || actual.size !== asset.bytes) throw new DesktopUpdateFailure("download-invalid");
     successful = true; progress(100); return filename;
   } finally {
+    const owned = !successful ? await handle.stat().catch(() => undefined) : undefined;
     await handle.close();
-    if (!successful) await fs.unlink(filename).catch(() => {});
+    if (!successful && owned?.isFile() && owned.nlink === 1) {
+      try {
+        const [currentDirectory, currentParent, currentFile] = await Promise.all([fs.lstat(directory), fs.lstat(parentPath), fs.lstat(filename)]);
+        const currentIdentity = currentFile.isFile() && !currentFile.isSymbolicLink() && currentFile.nlink === 1 && currentFile.dev === owned.dev && currentFile.ino === owned.ino && currentFile.size === owned.size && currentFile.mtimeMs === owned.mtimeMs && currentFile.ctimeMs === owned.ctimeMs;
+        const ownedDirectory = currentDirectory.isDirectory() && !currentDirectory.isSymbolicLink() && currentDirectory.dev === dir.dev && currentDirectory.ino === dir.ino && currentParent.isDirectory() && !currentParent.isSymbolicLink() && currentParent.dev === parent.dev && currentParent.ino === parent.ino && await fs.realpath(directory) === canonicalDirectory;
+        if (currentIdentity && ownedDirectory) {
+          const finalDirectory = await fs.lstat(directory), finalParent = await fs.lstat(parentPath);
+          if (finalDirectory.isDirectory() && !finalDirectory.isSymbolicLink() && finalDirectory.dev === dir.dev && finalDirectory.ino === dir.ino && finalParent.isDirectory() && !finalParent.isSymbolicLink() && finalParent.dev === parent.dev && finalParent.ino === parent.ino) await fs.unlink(filename);
+        }
+      } catch { /* A foreign/substituted path is never cleanup authority. */ }
+    }
   }
 }

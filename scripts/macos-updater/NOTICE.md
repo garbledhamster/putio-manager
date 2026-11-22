@@ -11,10 +11,26 @@ patch-sparkle.mjs: helper identity, HTTPS transport, no system profiling,
 allowlisted progress, exact signed descriptor matching and an asynchronous install gate.
 Sparkle's verification, extraction, authorization and replacement code is intact.
 
-Runtime Mac payload authentication uses Sparkle's Ed25519 archive signature before
-extraction. The authenticated release descriptor carries that same raw archive
-signature, version, URL and byte count. Public SUAppcastItem properties are checked
-before proceeding and again in willDownloadUpdate (including any selected delta).
+Mac preparation performs one bounded GitHub archive download and SHA-256 check
+against the signed release descriptor without starting Sparkle. Cancellation or
+host exit during preparation cannot leave a native installer behind. Only after
+successful engine shutdown does handoff open an ephemeral nonce-scoped loopback
+listener and authorize Sparkle to ingest the frozen metadata and cached ZIP.
+This listener is part of the app process, never an installed background service;
+it closes after the local copy or any error/cancellation/deadline. Routes, request
+counts, ranges, byte budget and cache identity are bounded. The helper's broad
+upstream ATS bypass is replaced with an HTTP exception for exactly 127.0.0.1,
+without subdomains, LAN ranges or a global/local-network bypass. Apple documents
+this exact-IP mechanism for macOS 14+; older supported macOS allows IP loads by
+default. Native hosted CI must verify the resulting loopback transport policy.
+https://developer.apple.com/documentation/bundleresources/information-property-list/nsapptransportsecurity/nsallowslocalnetworking
+https://developer.apple.com/documentation/bundleresources/information-property-list/nsapptransportsecurity/nsexceptiondomains
+
+Runtime Mac payload authentication still uses Sparkle's Ed25519 archive signature
+before extraction. The authenticated release descriptor carries that same raw
+archive signature, version, GitHub URL and byte count. Public SUAppcastItem
+properties match the frozen local ingestion descriptor before proceeding and
+again in willDownloadUpdate (including any selected delta).
 Public user-driver download callbacks cancel declared or received bytes above the
 signed limit; the native signature verifier still authenticates the payload.
 The publication audit verifies both archive signatures and the exact manifest

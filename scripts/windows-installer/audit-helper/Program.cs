@@ -20,7 +20,7 @@ if ((args.Length == 4 || args.Length == 5) && args[0] == "--fixture-products")
             var relative=Path.GetRelativePath(runnerRoot,markerPath);
             if (Path.IsPathRooted(relative) || relative==".." || relative.StartsWith(".."+Path.DirectorySeparatorChar) || Path.GetFileName(markerPath)!="native-update-ownership.json") throw new InvalidDataException();
             for (var current=markerPath;!String.Equals(current,runnerRoot,StringComparison.OrdinalIgnoreCase);current=Path.GetDirectoryName(current)!)
-                if (String.IsNullOrEmpty(current) || (File.GetAttributes(current)&FileAttributes.ReparsePoint)!=0) throw new InvalidDataException();
+                if (String.IsNullOrEmpty(current) || (File.GetAttributes(current)&System.IO.FileAttributes.ReparsePoint)!=0) throw new InvalidDataException();
             if (new FileInfo(markerPath).Length>4096) throw new InvalidDataException();
             using var marker=JsonDocument.Parse(File.ReadAllText(markerPath));
             var root=marker.RootElement;
