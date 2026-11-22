@@ -24,6 +24,54 @@ export function validateReleaseUpload(release, local, version, sha, draft) {
   }
   return true;
 }
+export function findReleaseByVersion(version, request) {
+  stableVersion(version);
+  const tag = `v${version}`, published = request(`repos/${repository}/releases/tags/${tag}`, true);
+  if (published) return published;
+  let found;
+  for (let page = 1; page <= 100; page++) {
+    const releases = request(`repos/${repository}/releases?per_page=100&page=${page}`);
+    if (!Array.isArray(releases) || releases.length > 100) throw new Error('GitHub release listing is invalid.');
+    for (const release of releases.filter(item => item.tag_name === tag)) {
+      if (found) throw new Error('Ambiguous unfinished releases must be preserved for review.');
+      if (!Number.isSafeInteger(release.id) || release.id < 1) throw new Error('GitHub release identity is invalid.');
+      found = release;
+    }
+    if (releases.length < 100) {
+      if (!found) return undefined;
+      const release = request(`repos/${repository}/releases/${found.id}`);
+      if (release.id !== found.id || release.tag_name !== tag) throw new Error('GitHub release identity changed.');
+      return release;
+    }
+  }
+  throw new Error('GitHub release listing exceeded its verification bound.');
+}
+export function versionState(version, request) {
+  stableVersion(version);
+  const tag = request(`repos/${repository}/git/ref/tags/v${version}`, true), release = findReleaseByVersion(version, request);
+  if (release?.draft || (!tag && release)) throw new Error('An unfinished release already exists; preserve it for review.');
+  return { version, skip: tag ? 'true' : 'false' };
+}
+export function publishVerifiedRelease(directory, assets, version, sha, request, execute) {
+  if (!/^[a-f0-9]{40}$/.test(sha)) throw new Error('Invalid publication source.');
+  if (versionState(version, request).skip === 'true') throw new Error('Existing versions must never be overwritten.');
+  const tag = `v${version}`;
+  const created = JSON.parse(execute(['api', '--method', 'POST', `repos/${repository}/releases`, '-f', `tag_name=${tag}`, '-f', `target_commitish=${sha}`, '-F', 'draft=true', '-F', 'prerelease=false', '-f', `name=Putio Manager ${version}`, '-f', 'body=Verified portable bundles and desktop installers for Windows, macOS and Linux, with signed update metadata. Windows installers are unsigned; download checksums and update signatures verify the published bytes. Documentation images use generated demonstration data.']));
+  if (!Number.isSafeInteger(created.id) || created.id < 1 || created.tag_name !== tag || created.target_commitish !== sha || created.draft !== true || created.prerelease !== false) throw new Error('Created draft does not match the verified publication.');
+  const endpoint = `repos/${repository}/releases/${created.id}`;
+  execute(['release', 'upload', tag, ...assets.map(asset => path.join(directory, asset.name)), '--repo', repository]);
+  const uploaded = request(endpoint);
+  if (uploaded.id !== created.id) throw new Error('GitHub release identity changed.');
+  validateReleaseUpload(uploaded, assets, version, sha, true);
+  const existingTag = request(`repos/${repository}/git/ref/tags/${tag}`, true);
+  if (existingTag && (existingTag.object?.type !== 'commit' || existingTag.object.sha !== sha)) throw new Error('Publication tag changed and does not match the verified commit.');
+  execute(['api', '--method', 'PATCH', endpoint, '-F', 'draft=false', '-F', 'prerelease=false', '-f', 'make_latest=true']);
+  const published = request(endpoint);
+  if (published.id !== created.id) throw new Error('GitHub release identity changed.');
+  validateReleaseUpload(published, assets, version, sha, false);
+  const publishedTag = request(`repos/${repository}/git/ref/tags/${tag}`);
+  if (publishedTag.object?.type !== 'commit' || publishedTag.object.sha !== sha) throw new Error('Published source tag does not match the verified commit.');
+}
 function gh(args) {
   const result = spawnSync('gh', args, { encoding: 'utf8', timeout: args[1] === 'upload' ? 1200000 : 120000, maxBuffer: 4 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'], shell: false });
   if (result.error || result.status !== 0) throw new Error('GitHub publication request failed.');
@@ -60,23 +108,13 @@ async function main() {
   }
   const { version } = JSON.parse(await readFile('package.json', 'utf8')); stableVersion(version);
   if (command === 'version-state') {
-    const tag = getJson(`repos/${repository}/git/ref/tags/v${version}`, true);
-    const release = getJson(`repos/${repository}/releases/tags/v${version}`, true);
-    if (!tag && release) throw new Error('An unfinished release already exists; preserve it for review.');
-    await output({ version, skip: tag ? 'true' : 'false' });
-    console.log(tag ? 'This version already exists; publication skipped.' : 'New stable version is eligible for verified publication.'); return;
+    const state = versionState(version, getJson);
+    await output(state);
+    console.log(state.skip === 'true' ? 'This version already exists; publication skipped.' : 'New stable version is eligible for verified publication.'); return;
   }
   if (command !== 'publish' || !/^[a-f0-9]{40}$/.test(suppliedSha)) throw new Error('Invalid publication command.');
   const assets = await localPublished(value, version);
-  if (getJson(`repos/${repository}/git/ref/tags/v${version}`, true) || getJson(`repos/${repository}/releases/tags/v${version}`, true)) throw new Error('Existing versions must never be overwritten.');
-  const tag = `v${version}`;
-  gh(['release', 'create', tag, '--draft', '--repo', repository, '--target', suppliedSha, '--title', `Putio Manager ${version}`, '--notes', 'Verified portable bundles and desktop installers for Windows, macOS and Linux, with signed update metadata. Windows installers are unsigned; download checksums and update signatures verify the published bytes. Documentation images use generated demonstration data.']);
-  gh(['release', 'upload', tag, ...assets.map(asset => path.join(value, asset.name)), '--repo', repository]);
-  validateReleaseUpload(getJson(`repos/${repository}/releases/tags/${tag}`), assets, version, suppliedSha, true);
-  gh(['release', 'edit', tag, '--repo', repository, '--draft=false', '--prerelease=false', '--latest']);
-  validateReleaseUpload(getJson(`repos/${repository}/releases/tags/${tag}`), assets, version, suppliedSha, false);
-  const publishedTag = getJson(`repos/${repository}/git/ref/tags/${tag}`);
-  if (publishedTag.object?.type !== 'commit' || publishedTag.object.sha !== suppliedSha) throw new Error('Published source tag does not match the verified commit.');
+  publishVerifiedRelease(value, assets, version, suppliedSha, getJson, gh);
   console.log('Published the complete verified release; source tag and every uploaded asset match.');
 }
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main().catch(() => { console.error('Verified publication could not complete. Existing releases and unfinished drafts were preserved. No private values were printed.'); process.exitCode = 1; });
