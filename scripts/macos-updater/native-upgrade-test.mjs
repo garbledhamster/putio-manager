@@ -72,10 +72,15 @@ export async function testMacUpgrade() {
       const rejected = await helperCycle(before, base + 'appcast.xml', { descriptor });
       if (!rejected.failureCodes.includes('release-invalid') || archiveRequests !== requestsBefore) throw new Error('Native descriptor binding accepted a replay or downloaded a mismatched archive.');
     }
+    console.log('Verified native descriptor binding rejects archive replay and size mismatch before download.');
     const invalidSignature = Buffer.alloc(64).toString('base64');
     payloads.set('/appcast.xml', appcast(invalidSignature));
     const corrupt = await helperCycle(before, base + 'appcast.xml', { descriptor: { ...descriptor, ed25519: invalidSignature } });
-    if (corrupt.code === 0 || !corrupt.failureCodes.includes('signature-invalid')) throw new Error('Native Sparkle accepted an invalid archive signature.');
+    if (corrupt.code === 0 || !corrupt.failureCodes.includes('signature-invalid')) {
+      const codes = corrupt.failureCodes.filter(value => ['release-invalid', 'signature-invalid', 'download-invalid', 'installer-failed', 'network', 'permission-required', 'installer-cancelled'].includes(value)).slice(0, 8);
+      throw new Error(`Native archive signature rejection was not confirmed (exit ${Number.isInteger(corrupt.code) ? corrupt.code : 'signal'}; controlled failures ${JSON.stringify(codes)}).`);
+    }
+    console.log('Verified native archive signature rejection before installation.');
     payloads.set('/appcast.xml', appcast(signature.toString('base64')));
     payloads.set('/' + name, Buffer.concat([bytes, Buffer.from([0])]));
     const oversized = await helperCycle(before, base + 'appcast.xml', { descriptor });

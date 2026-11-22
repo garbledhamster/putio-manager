@@ -2,10 +2,25 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { buildWindowsInstallers, getWindowsInstallerIdentity, runTool } from './build.mjs';
-import { auditWindowsInstallers } from './audit.mjs';
+import { buildWindowsInstallers, getWindowsInstallerIdentity, runTool, installerToolFailureStatus } from './build.mjs';
+import { auditWindowsInstallers, auditFailureStatus } from './audit.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
+const fixtureStages=new Set(['build-a','build-b','build-failure','audit-a','audit-b','audit-failure','opposite-marker-create','opposite-install-refused','opposite-marker-remove','exe-a-install','assert-installed-a','msi-b-upgrade','assert-installed-b','msi-b-reinstall','msi-b-repair','downgrade-refused','upgrade-rollback','uninstall-b','msi-a-install','exe-b-upgrade']);
+const fixtureCodes=new Map([
+  ['Fixture has duplicate, stale Burn, or incorrect MSI registration.','registration-mismatch'],
+  ['Fixture installed ownership registration is invalid.','ownership-mismatch'],
+  ['Installed fixture bytes do not match the expected version.','payload-mismatch'],
+  ['Fixture profile or media was changed.','generated-data-changed'],
+  ['Fixture uninstall left an installer registration.','uninstall-registration'],
+  ['Fixture uninstall left application executable.','uninstall-payload'],
+  ['Architecture conflict changed the registered installation.','architecture-registration'],
+  ['Architecture conflict wrote application files.','architecture-payload'],
+]);
+export function fixtureFailureStatus(stage,error) {
+  const audit=auditFailureStatus(error);
+  return {schema:1,fixtureStage:fixtureStages.has(stage)?stage:'initialization',code:fixtureCodes.get(error?.message)||'fixture-failed',...installerToolFailureStatus(error),...(audit.stage!=='initialization'?{audit}:{})};
+}
 export function requireDisposableWindowsRunner(env = process.env,platform = process.platform) {
   if (platform !== 'win32' || env.GITHUB_ACTIONS !== 'true' || env.RUNNER_ENVIRONMENT !== 'github-hosted' || env.GITHUB_REPOSITORY !== 'garbledhamster/putio-manager' || !env.RUNNER_TEMP || !env.LOCALAPPDATA || !env.APPDATA) throw new Error('Native installer execution is restricted to disposable hosted repository CI.');
 }
@@ -26,6 +41,7 @@ export async function runNativeInstallerFixture() {
   const products = [];
   let registered = false;
   let oppositeMarker = false;
+  let stage='initialization';
   async function setOppositeMarker(operation) {
     await runTool(path.join(process.env.SystemRoot,'System32','WindowsPowerShell','v1.0','powershell.exe'),['-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',path.join(here,'fixture-opposite-architecture.ps1'),'-RegistrySubKey',a.oppositeRegistryKey,'-Operation',operation,'-GeneratedLocation',path.join(work,'synthetic-opposite-install')]);
     oppositeMarker = operation === 'create';
@@ -62,6 +78,8 @@ export async function runNativeInstallerFixture() {
     await fs.writeFile(path.join(profile,'settings-fixture.txt'),sentinel);
     await fs.writeFile(path.join(media,'generated-media.txt'),sentinel);
     for (const identity of [a,b,failed]) {
+      const label=identity===a?'a':identity===b?'b':'failure';
+      stage=`build-${label}`;
       const appDirectory = path.join(work,`app-${identity.version}`);
       await fs.mkdir(path.join(appDirectory,'resources/app'),{recursive:true});
       // The fixture executable is Node, never the real application or an account profile.
@@ -71,32 +89,40 @@ export async function runNativeInstallerFixture() {
       const fixture = {family,failAfterInstallFiles:identity === failed};
       const outputDirectory = path.join(work,`output-${identity.version}`);
       const result = await buildWindowsInstallers({version:identity.version,arch,appDirectory,outputDirectory,fixture});
+      stage=`audit-${label}`;
       const audit = await auditWindowsInstallers({version:identity.version,arch,appDirectory,outputDirectory,fixture});
       await audit.cleanup(); products.push(result);
     }
     // A synthetic opposite-architecture ownership marker exercises AppSearch on
     // either native runner without requiring that host to execute the other CPU.
-    await setOppositeMarker('create');
+    stage='opposite-marker-create'; await setOppositeMarker('create');
+    stage='opposite-install-refused';
     await msi(['/i',products[0].msi],[1603]);
     if ((await inventory()).records.length !== 0) throw new Error('Architecture conflict changed the registered installation.');
     try { await fs.access(path.join(installed,'PutioManager.exe')); throw new Error('Architecture conflict wrote application files.'); } catch(error) { if(error.code!=='ENOENT') throw error; }
     await assertPreserved();
-    await setOppositeMarker('remove');
+    stage='opposite-marker-remove'; await setOppositeMarker('remove');
+    stage='exe-a-install';
     await runTool(products[0].exe,['/quiet','/norestart']); registered = true;
-    await assertInstalled(a);
-    await msi(['/i',products[1].msi]); await assertInstalled(b);
+    stage='assert-installed-a'; await assertInstalled(a);
+    stage='msi-b-upgrade'; await msi(['/i',products[1].msi]);
+    stage='assert-installed-b'; await assertInstalled(b);
     // Reinstallation and repair use the retained exact MSI as source media.
-    await msi(['/i',products[1].msi,'REINSTALL=ALL','REINSTALLMODE=vomus']); await assertInstalled(b);
+    stage='msi-b-reinstall'; await msi(['/i',products[1].msi,'REINSTALL=ALL','REINSTALLMODE=vomus']); await assertInstalled(b);
+    stage='msi-b-repair';
     await fs.unlink(path.join(installed,'resources/app/fixture-version.txt'));
     await msi(['/fa',products[1].msi]); await assertInstalled(b);
-    await msi(['/i',products[0].msi],[1603,1638]); await assertInstalled(b);
-    await msi(['/i',products[2].msi],[1603]); await assertInstalled(b);
-    await remove(b);
-    await msi(['/i',products[0].msi]); registered = true; await assertInstalled(a);
-    await runTool(products[1].exe,['/quiet','/norestart']); await assertInstalled(b);
-    await remove(b);
+    stage='downgrade-refused'; await msi(['/i',products[0].msi],[1603,1638]); await assertInstalled(b);
+    stage='upgrade-rollback'; await msi(['/i',products[2].msi],[1603]); await assertInstalled(b);
+    stage='uninstall-b'; await remove(b);
+    stage='msi-a-install'; await msi(['/i',products[0].msi]); registered = true; await assertInstalled(a);
+    stage='exe-b-upgrade'; await runTool(products[1].exe,['/quiet','/norestart']); await assertInstalled(b);
+    stage='uninstall-b'; await remove(b);
     console.log('Verified disposable EXE/MSI upgrades, one MSI registration, repair, rollback, downgrade refusal and preserved generated data.');
     return {ok:true,arch,checks:['opposite-architecture-blocked-before-write','exe-to-msi','msi-to-exe','one-msi-registration','no-burn-registration','reinstall','repair','downgrade-refused','rollback','uninstall','profile-preserved','media-preserved']};
+  } catch(error) {
+    console.error(JSON.stringify(fixtureFailureStatus(stage,error)));
+    throw error;
   } finally {
     if (oppositeMarker) await setOppositeMarker('remove').catch(()=>{});
     if (registered) {

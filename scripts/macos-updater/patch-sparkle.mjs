@@ -111,14 +111,21 @@ ${check}`);
   if (!source.includes(completion)) throw new Error('Pinned Sparkle completion did not match.');
   source = source.replace(completion, `    if (error != nil) {
         NSString *code = @"installer-failed";
-        if ([error.domain isEqualToString:SUSparkleErrorDomain]) {
-            switch (error.code) {
-                case SUSignatureError: case SUValidationError: code = @"signature-invalid"; break;
-                case SUDownloadError: case SUAppcastError: code = @"network"; break;
-                case SUInstallationWriteNoPermissionError: case SUAuthenticationFailure: code = @"permission-required"; break;
-                case SUInstallationCanceledError: code = @"installer-cancelled"; break;
-                default: break;
+        // Sparkle wraps pre-extraction signature errors in installation/unarchive
+        // errors. Inspect only a bounded public NSError chain; emit no raw data.
+        NSError *cause = error;
+        for (NSUInteger depth = 0; cause != nil && depth < 8; depth++) {
+            if ([cause.domain isEqualToString:SUSparkleErrorDomain]) {
+                switch (cause.code) {
+                    case SUSignatureError: case SUValidationError: code = @"signature-invalid"; break;
+                    case SUDownloadError: case SUAppcastError: if ([code isEqual:@"installer-failed"]) code = @"network"; break;
+                    case SUInstallationWriteNoPermissionError: case SUAuthenticationFailure: if ([code isEqual:@"installer-failed"]) code = @"permission-required"; break;
+                    case SUInstallationCanceledError: if ([code isEqual:@"installer-failed"]) code = @"installer-cancelled"; break;
+                    default: break;
+                }
             }
+            id underlying = cause.userInfo[NSUnderlyingErrorKey];
+            cause = [underlying isKindOfClass:NSError.class] ? underlying : nil;
         }
         putioEmit(@{@"phase": @"failed", @"code": code});
     }

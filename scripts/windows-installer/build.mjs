@@ -163,6 +163,16 @@ export async function stageWindowsUpdateRuntime(appDirectory, options = {}) {
   await writeIdenticalOrNew(path.join(root,'resources/installer-notices/WIX-SOURCE.txt'),`WiX Toolset ${WIX_VERSION}\nSource: ${WIX_SOURCE_URL}\nCorresponding source is distributed with each release as ${WIX_SOURCE_ASSET}.\nWiX components retain their Microsoft Reciprocal License; the application retains its own license.\n`);
   return {version,sha256:hash(bytes)};
 }
+class InstallerToolError extends Error {
+  constructor(code,codes) {
+    super(`An installer build or audit tool failed.${codes.length ? ` Tool codes: ${codes.join(', ')}.` : ''}`);
+    this.exitCode=Number.isInteger(code)&&code>=0&&code<=0xffffffff?code:undefined;
+    this.toolCodes=codes;
+  }
+}
+export function installerToolFailureStatus(error) {
+  return error instanceof InstallerToolError ? {...(error.exitCode!==undefined?{exitCode:error.exitCode}:{}),...(error.toolCodes.length?{toolCodes:error.toolCodes}:{})} : {};
+}
 export async function runTool(command,args,{cwd,env,allowExitCodes=[0],timeoutMs} = {}) {
   return await new Promise((resolve,reject) => {
     const child = spawn(command,args,{cwd,env:{...process.env,...env},windowsHide:true,stdio:['ignore','pipe','pipe']});
@@ -175,7 +185,7 @@ export async function runTool(command,args,{cwd,env,allowExitCodes=[0],timeoutMs
       clearTimeout(timeout);
       if (!exceeded && allowExitCodes.includes(code)) { resolve({code,stdout}); return; }
       const codes = [...new Set(`${stdout}\n${stderr}`.match(/\b(?:WIX\d{4}|CS\d{4}|NU\d{4}|NETSDK\d{4}|DTF_(?:OPEN|PROPERTIES|DIRECTORIES|COMPONENTS|FILES|REGISTRY|SHORTCUTS|REMOVALS|CUSTOM_ACTIONS|UPGRADE|SEQUENCE|SEARCH|LAUNCH|MEDIA|EXTRACT|MANIFEST|BUNDLE_XML)_(?:MSI|INVALID|IO|UNEXPECTED))\b/g) || [])].slice(0,12);
-      reject(new Error(`An installer build or audit tool failed.${codes.length ? ` Tool codes: ${codes.join(', ')}.` : ''}`));
+      reject(new InstallerToolError(code,codes));
     });
   });
 }

@@ -138,12 +138,21 @@ test('native fixture guard refuses operator machines, unhosted runners and other
 });
 
 test('tool failures disclose stable diagnostic codes without raw compiler or machine output', async () => {
-  const {runTool}=await moduleUnderTest();
+  const {runTool,installerToolFailureStatus}=await moduleUnderTest();
   await assert.rejects(runTool(process.execPath,['-e',"process.stderr.write('CS1234 generated-private-build-location');process.exit(1)"]),error => {
     assert.match(error.message,/CS1234/);
     assert.doesNotMatch(error.message,/generated-private-build-location/);
+    assert.deepEqual(installerToolFailureStatus(error),{exitCode:1,toolCodes:['CS1234']});
     return true;
   });
+  assert.deepEqual(installerToolFailureStatus({exitCode:1603,message:'generated-private'}),{});
+});
+
+test('native lifecycle diagnostics select only fixed stages and sanitized outcomes', async () => {
+  const {fixtureFailureStatus}=await import('../scripts/windows-installer/native-fixture.mjs');
+  assert.deepEqual(fixtureFailureStatus('exe-a-install',Error('generated-private')),{schema:1,fixtureStage:'exe-a-install',code:'fixture-failed'});
+  assert.deepEqual(fixtureFailureStatus('generated-private',Error('generated-private')),{schema:1,fixtureStage:'initialization',code:'fixture-failed'});
+  assert.deepEqual(fixtureFailureStatus('assert-installed-a',Error('Fixture has duplicate, stale Burn, or incorrect MSI registration.')),{schema:1,fixtureStage:'assert-installed-a',code:'registration-mismatch'});
 });
 
 test('native updater acceptance cannot execute on an operator machine', async () => {
