@@ -27,7 +27,7 @@ async function helperFixture(t) {
   const previousExecutable = path.join(root, 'previous', 'PutioManager.exe');
   const installer = path.join(directory, 'verified-update.msi');
   const payload = Buffer.from('Generated MSI bytes; never execute this fixture.');
-  await fs.mkdir(directory, { recursive: true });
+  await fs.mkdir(directory, { recursive: true, mode: 0o700 });
   await fs.mkdir(installDirectory, { recursive: true });
   await fs.mkdir(path.dirname(previousExecutable), { recursive: true });
   await fs.writeFile(installer, payload);
@@ -233,4 +233,108 @@ test('Windows outcome retires a failure from an older target after a newer manua
   const f = await helperFixture(t);
   await fs.writeFile(path.join(f.directory, 'receipt.json'), JSON.stringify({ schema: 1, version: '2.3.0', phase: 'failed', errorCode: 'installer-failed', verified: false }));
   assert.equal(await readWindowsUpdateOutcome(f.profile, '2.4.0'), undefined);
+  assert.equal(JSON.parse(await fs.readFile(path.join(f.directory, 'receipt.json'), 'utf8')).phase, 'failed');
+});
+
+test('Windows terminal receipt releases only owned heavy cache files and preserves recovery records', async t => {
+  const f = await helperFixture(t);
+  await applyWindowsUpdate(f.jobFile, f.dependencies);
+  for (const name of ['node.exe', 'apply-update.js', 'unknown-fixture.txt']) await fs.writeFile(path.join(f.directory, name), 'Generated cache fixture.');
+  assert.deepEqual(await readWindowsUpdateOutcome(f.profile, '2.3.0'), { phase: 'updated' });
+  assert.deepEqual((await fs.readdir(f.directory)).sort(), ['handoff.json', 'handoff.lock', 'receipt.json', 'unknown-fixture.txt']);
+});
+
+test('Windows failed terminal receipt also releases its verified download for a fresh retry', async t => {
+  const f = await helperFixture(t);
+  f.dependencies.install = async () => 1603;
+  await applyWindowsUpdate(f.jobFile, f.dependencies);
+  await fs.writeFile(path.join(f.directory, 'node.exe'), 'Generated unused runtime.');
+  assert.deepEqual(await readWindowsUpdateOutcome(f.profile, '2.2.0'), { phase: 'failed', errorCode: 'installer-failed' });
+  await assert.rejects(fs.lstat(f.installer), { code: 'ENOENT' });
+  await assert.rejects(fs.lstat(path.join(f.directory, 'node.exe')), { code: 'ENOENT' });
+  assert.equal(JSON.parse(await fs.readFile(f.jobFile, 'utf8')).targetVersion, '2.3.0');
+});
+
+test('Windows cleanup retries a mapped runtime on the next launch without removing recovery records', async t => {
+  const f = await helperFixture(t);
+  await applyWindowsUpdate(f.jobFile, f.dependencies);
+  const runtime = path.join(f.directory, 'node.exe');
+  await fs.writeFile(runtime, 'Generated mapped runtime.');
+  const unlink = fs.unlink;
+  let locked = true;
+  t.mock.method(fs, 'unlink', async filename => {
+    if (filename === runtime && locked) { locked = false; throw Object.assign(Error('Generated file sharing violation.'), { code: 'EBUSY' }); }
+    return unlink(filename);
+  });
+  assert.deepEqual(await readWindowsUpdateOutcome(f.profile, '2.3.0'), { phase: 'updated' });
+  assert.equal((await fs.lstat(runtime)).isFile(), true);
+  assert.equal((await fs.lstat(f.jobFile)).isFile(), true);
+  assert.deepEqual(await readWindowsUpdateOutcome(f.profile, '2.3.0'), { phase: 'updated' });
+  await assert.rejects(fs.lstat(runtime), { code: 'ENOENT' });
+  assert.equal((await fs.lstat(path.join(f.directory, 'receipt.json'))).isFile(), true);
+});
+
+test('Windows cleanup leaves an in-progress or unproven operation intact', async t => {
+  const f = await helperFixture(t);
+  await fs.writeFile(path.join(f.directory, 'handoff.lock'), '');
+  await fs.writeFile(path.join(f.directory, 'receipt.json'), JSON.stringify({ schema: 1, version: '2.3.0', phase: 'installing', verified: false }));
+  assert.equal(await readWindowsUpdateOutcome(f.profile, '2.3.0'), undefined);
+  assert.equal((await fs.lstat(f.installer)).size, f.payload.length);
+  await fs.writeFile(path.join(f.directory, 'receipt.json'), JSON.stringify({ schema: 1, version: '2.3.0', phase: 'updated', verified: true }));
+  await fs.writeFile(f.jobFile, JSON.stringify({ ...f.job, targetVersion: '2.4.0' }));
+  await readWindowsUpdateOutcome(f.profile, '2.3.0');
+  assert.equal((await fs.lstat(f.installer)).size, f.payload.length);
+});
+
+test('Windows completed reboot retires the restart warning while retaining authoritative current version and records', async t => {
+  const f = await helperFixture(t);
+  f.dependencies.install = async () => 3010;
+  await applyWindowsUpdate(f.jobFile, f.dependencies);
+  const receiptFile = path.join(f.directory, 'receipt.json');
+  const receipt = JSON.parse(await fs.readFile(receiptFile, 'utf8'));
+  receipt.bootTime = Date.now() - os.uptime() * 1000 - 300000;
+  await fs.writeFile(receiptFile, JSON.stringify(receipt));
+  assert.deepEqual(await readWindowsUpdateOutcome(f.profile, '2.3.0'), { phase: 'updated' });
+  assert.equal(JSON.parse(await fs.readFile(receiptFile, 'utf8')).phase, 'restart-required');
+  assert.equal(await readWindowsUpdateOutcome(f.profile, '2.2.0'), undefined);
+});
+
+test('Windows receipt selection finds the newest terminal outcome beyond sixty-four operation directories', async t => {
+  const f = await helperFixture(t);
+  const root = path.dirname(f.directory);
+  const older = new Date(Date.now() - 60000);
+  for (let index = 0; index < 66; index++) {
+    const directory = path.join(root, `windows-a${String(index).padStart(3, '0')}`);
+    await fs.mkdir(directory, { mode: 0o700 });
+    await fs.writeFile(path.join(directory, 'handoff.json'), JSON.stringify(f.job));
+    await fs.writeFile(path.join(directory, 'handoff.lock'), '');
+    await fs.writeFile(path.join(directory, 'verified-update.msi'), f.payload);
+    const receipt = path.join(directory, 'receipt.json');
+    await fs.writeFile(receipt, JSON.stringify({ schema: 1, version: '2.3.0', phase: 'failed', errorCode: 'installer-failed', verified: false }));
+    await fs.utimes(receipt, older, older);
+  }
+  const latest = path.join(root, 'windows-zNewest');
+  await fs.mkdir(latest);
+  await fs.writeFile(path.join(latest, 'receipt.json'), JSON.stringify({ schema: 1, version: '2.3.0', phase: 'updated', verified: true }));
+  assert.deepEqual(await readWindowsUpdateOutcome(f.profile, '2.3.0'), { phase: 'updated' });
+  for (const name of ['windows-a000', 'windows-a065']) await assert.rejects(fs.lstat(path.join(root, name, 'verified-update.msi')), { code: 'ENOENT' });
+});
+
+test('Windows cleanup never traverses a linked operation directory or a linked heavy-file name', async t => {
+  const f = await helperFixture(t);
+  await applyWindowsUpdate(f.jobFile, f.dependencies);
+  const outside = path.join(f.root, 'outside-operation');
+  await fs.rename(f.directory, outside);
+  await fs.symlink(outside, f.directory, process.platform === 'win32' ? 'junction' : 'dir');
+  assert.equal(await readWindowsUpdateOutcome(f.profile, '2.3.0'), undefined);
+  assert.equal((await fs.lstat(path.join(outside, 'verified-update.msi'))).size, f.payload.length);
+  await fs.unlink(f.directory);
+  await fs.rename(outside, f.directory);
+  const unknown = path.join(f.root, 'outside-content');
+  await fs.mkdir(unknown);
+  await fs.writeFile(path.join(unknown, 'sentinel'), 'Generated data must remain.');
+  await fs.symlink(unknown, path.join(f.directory, 'node.exe'), process.platform === 'win32' ? 'junction' : 'dir');
+  assert.deepEqual(await readWindowsUpdateOutcome(f.profile, '2.3.0'), { phase: 'updated' });
+  assert.equal(await fs.readFile(path.join(unknown, 'sentinel'), 'utf8'), 'Generated data must remain.');
+  assert.equal((await fs.lstat(path.join(f.directory, 'node.exe'))).isSymbolicLink(), true);
 });

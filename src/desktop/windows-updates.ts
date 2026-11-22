@@ -6,7 +6,7 @@ import os from 'node:os';
 import {stableVersion, compareVersions} from './update-release';
 import { DesktopUpdateFailure } from "./update-errors";
 import { downloadUpdateAsset, privateUpdateDirectory, verifyUpdateFile } from "./update-transfer";
-import { readWindowsInstallValue, type WindowsUpdateJob } from "./update-windows-helper";
+import { readWindowsInstallValue, validateWindowsUpdateJob, type WindowsUpdateJob } from "./update-windows-helper";
 import type { DesktopUpdateAdapter, NativeUpdateContext, PreparedDesktopUpdate, VerifiedDesktopRelease, DesktopUpdateError } from "./update-types";
 
 export function createWindowsUpdateAdapter(context:NativeUpdateContext):DesktopUpdateAdapter{
@@ -66,26 +66,85 @@ export function createWindowsUpdateAdapter(context:NativeUpdateContext):DesktopU
     }
   };
 }
+interface CacheFileIdentity {dev:number;ino:number}
+interface TerminalWindowsReceipt {
+  version:string;
+  phase:'updated'|'failed'|'restart-required';
+  errorCode?:DesktopUpdateError;
+  bootTime?:number;
+}
+const windowsReceiptErrors:readonly DesktopUpdateError[]=['download-invalid','app-busy','installer-busy','installer-cancelled','installer-failed','restart-required'];
+const sameCacheFile=(first:CacheFileIdentity,second:CacheFileIdentity)=>first.dev===second.dev&&first.ino===second.ino;
+async function readCacheRecord(filename:string,limit:number):Promise<{value:unknown;time:number}>{
+  const before=await fs.lstat(filename);
+  if(!before.isFile()||before.isSymbolicLink()||before.size<1||before.size>limit)throw Error('download-invalid');
+  const handle=await fs.open(filename,constants.O_RDONLY|(constants.O_NOFOLLOW??0));
+  try{
+    const opened=await handle.stat();
+    if(!opened.isFile()||!sameCacheFile(before,opened)||opened.size!==before.size)throw Error('download-invalid');
+    const bytes=Buffer.alloc(limit+1);
+    let received=0;
+    while(received<bytes.length){const chunk=await handle.read(bytes,received,bytes.length-received,null);if(!chunk.bytesRead)break;received+=chunk.bytesRead;}
+    const after=await fs.lstat(filename);
+    if(received!==before.size||!after.isFile()||after.isSymbolicLink()||!sameCacheFile(before,after)||after.size!==before.size||after.mtimeMs!==before.mtimeMs||after.ctimeMs!==before.ctimeMs)throw Error('download-invalid');
+    return{value:JSON.parse(bytes.subarray(0,received).toString('utf8')),time:before.mtimeMs};
+  }finally{await handle.close();}
+}
+function terminalWindowsReceipt(value:unknown):TerminalWindowsReceipt|undefined{
+  if(!value||typeof value!=='object'||Array.isArray(value))return;
+  const receipt=value as Record<string,unknown>;
+  if(receipt.schema!==1||!stableVersion(receipt.version))return;
+  if(receipt.phase==='updated'&&receipt.verified===true)return{version:receipt.version,phase:'updated'};
+  if(receipt.verified!==false)return;
+  if(receipt.phase==='failed'&&windowsReceiptErrors.includes(receipt.errorCode as DesktopUpdateError))return{version:receipt.version,phase:'failed',errorCode:receipt.errorCode as DesktopUpdateError};
+  if(receipt.phase==='restart-required'&&receipt.errorCode==='restart-required')return{version:receipt.version,phase:'restart-required',errorCode:'restart-required',bootTime:typeof receipt.bootTime==='number'&&Number.isFinite(receipt.bootTime)?receipt.bootTime:undefined};
+}
+async function cleanTerminalWindowsPayload(root:string,rootIdentity:CacheFileIdentity,directory:string,directoryIdentity:CacheFileIdentity,receipt:TerminalWindowsReceipt):Promise<void>{
+  // A directory name or receipt alone does not establish ownership of payloads.
+  const job=validateWindowsUpdateJob((await readCacheRecord(path.join(directory,'handoff.json'),16384)).value);
+  const lock=await fs.lstat(path.join(directory,'handoff.lock'));
+  if(job.targetVersion!==receipt.version||!lock.isFile()||lock.isSymbolicLink()||lock.nlink!==1)return;
+  for(const name of['verified-update.msi','node.exe','apply-update.js']){
+    try{
+      const currentRoot=await fs.lstat(root),currentDirectory=await fs.lstat(directory);
+      if(!currentRoot.isDirectory()||currentRoot.isSymbolicLink()||!sameCacheFile(rootIdentity,currentRoot)||await fs.realpath(root)!==root||!currentDirectory.isDirectory()||currentDirectory.isSymbolicLink()||!sameCacheFile(directoryIdentity,currentDirectory)||await fs.realpath(directory)!==directory||(process.platform!=='win32'&&(currentDirectory.mode&0o077)!==0))return;
+      const filename=path.join(directory,name),before=await fs.lstat(filename);
+      if(!before.isFile()||before.isSymbolicLink()||before.nlink!==1)continue;
+      const after=await fs.lstat(filename);
+      if(after.isFile()&&!after.isSymbolicLink()&&sameCacheFile(before,after)&&after.nlink===1)await fs.unlink(filename);
+    }catch{/* A mapped Node executable may remain locked until the helper exits. Retry next launch. */}
+  }
+  // Keep the receipt, job and lock: the helper may still be finishing its relaunch.
+}
 /** Controlled receipts are hints; the actual running application version remains authoritative. */
 export async function readWindowsUpdateOutcome(userDataDirectory:string,currentVersion:string):Promise<{phase:'updated'|'failed'|'restart-required';errorCode?:DesktopUpdateError}|undefined>{
-  const root=path.join(userDataDirectory,'desktop-updates');
+  if(!path.isAbsolute(userDataDirectory)||!stableVersion(currentVersion))return;
+  const root=path.resolve(userDataDirectory,'desktop-updates');
   try{
-    const names=(await fs.readdir(root,{withFileTypes:true})).filter(entry=>entry.isDirectory()&&!entry.isSymbolicLink()&&/^windows-[a-zA-Z0-9]+$/.test(entry.name)).slice(0,64);
-    const items:{file:string;time:number}[]=[];
-    for(const entry of names){const file=path.join(root,entry.name,'receipt.json'),info=await fs.lstat(file).catch(()=>undefined);if(info?.isFile()&&!info.isSymbolicLink()&&info.size<4096)items.push({file,time:info.mtimeMs})}
-    items.sort((a,b)=>b.time-a.time);
-    if(!items[0])return;
-    const receipt=JSON.parse(await fs.readFile(items[0].file,'utf8'));
-    if(receipt.schema!==1||!stableVersion(receipt.version)||!stableVersion(currentVersion))return;
-    const retire=async()=>{await fs.unlink(items[0].file).catch(()=>{})};
-    if(compareVersions(currentVersion,receipt.version)>0){await retire();return;}
-    if(receipt.phase==='updated'&&receipt.verified===true&&receipt.version===currentVersion)return{phase:'updated'};
-    const allowed:DesktopUpdateError[]=['download-invalid','app-busy','installer-busy','installer-cancelled','installer-failed','restart-required'];
+    const rootInfo=await fs.lstat(root);
+    if(!rootInfo.isDirectory()||rootInfo.isSymbolicLink()||await fs.realpath(root)!==root||(process.platform!=='win32'&&(rootInfo.mode&0o022)!==0))return;
+    let latest:{receipt:TerminalWindowsReceipt;time:number;name:string}|undefined;
+    // Scan all entries with constant retained memory; an arbitrary first-64
+    // window could hide the newest receipt and strand old installer payloads.
+    for await(const entry of await fs.opendir(root)){
+      if(!entry.isDirectory()||entry.isSymbolicLink()||!/^windows-[a-zA-Z0-9]+$/.test(entry.name))continue;
+      try{
+        const directory=path.join(root,entry.name),info=await fs.lstat(directory);
+        if(!info.isDirectory()||info.isSymbolicLink()||await fs.realpath(directory)!==directory)continue;
+        const record=await readCacheRecord(path.join(directory,'receipt.json'),4096),receipt=terminalWindowsReceipt(record.value);
+        if(!receipt)continue;
+        await cleanTerminalWindowsPayload(root,rootInfo,directory,info,receipt).catch(()=>{});
+        if(!latest||record.time>latest.time||record.time===latest.time&&entry.name>latest.name)latest={receipt,time:record.time,name:entry.name};
+      }catch{/* Incomplete, changed and foreign cache records are not update evidence. */}
+    }
+    const receipt=latest?.receipt;
+    if(!receipt||compareVersions(currentVersion,receipt.version)>0)return;
+    if(receipt.phase==='updated')return receipt.version===currentVersion?{phase:'updated'}:undefined;
     if(receipt.phase==='restart-required'){
       const bootTime=Date.now()-os.uptime()*1000;
-      if(typeof receipt.bootTime==='number'&&Number.isFinite(receipt.bootTime)&&bootTime>receipt.bootTime+120000){await retire();return receipt.version===currentVersion?{phase:'updated'}:undefined;}
+      if(receipt.bootTime!==undefined&&bootTime>receipt.bootTime+120000)return receipt.version===currentVersion?{phase:'updated'}:undefined;
       return{phase:'restart-required',errorCode:'restart-required'};
     }
-    if(receipt.phase==='failed'&&allowed.includes(receipt.errorCode))return{phase:'failed',errorCode:receipt.errorCode};
+    return{phase:'failed',errorCode:receipt.errorCode};
   }catch{}
 }

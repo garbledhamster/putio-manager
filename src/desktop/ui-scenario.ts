@@ -244,8 +244,11 @@ export async function runUiScenario(window: BrowserWindow, remote: { url: string
   if (submittedTransferParents().join() !== "1") throw new Error("Magnet submission did not use the chosen folder exactly once.");
 
   const checkSearchPosition = async (stacked: boolean) => {
-    const isStacked = await evaluate<boolean>("document.querySelector('#global-search').getBoundingClientRect().top >= document.querySelector('#navigation').getBoundingClientRect().bottom");
-    if (isStacked !== stacked) throw new Error("Search layout did not respond to window width.");
+    try { await waitFor(`(document.querySelector('#global-search').getBoundingClientRect().top >= document.querySelector('#navigation').getBoundingClientRect().bottom) === ${stacked}`, 'responsive search position'); }
+    catch {
+      const bounds=await evaluate("(() => { const search=document.querySelector('#global-search').getBoundingClientRect(),nav=document.querySelector('#navigation').getBoundingClientRect();return {width:innerWidth,height:innerHeight,searchTop:search.top,searchLeft:search.left,navBottom:nav.bottom,navRight:nav.right}; })()");
+      throw new Error(`Search layout did not respond to window width: expectedStacked=${stacked}; ${JSON.stringify(bounds)}`);
+    }
   };
   await checkSearchPosition(false);
   window.setSize(360, 560);
