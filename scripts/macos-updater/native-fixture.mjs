@@ -1,9 +1,15 @@
 import { cp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
+/** Pure guard: native replacement tests run only on disposable hosted project runners. */
+export function assertHostedNativeFixture(expectedPlatform, platform = process.platform, env = process.env) {
+  if (!['darwin', 'linux'].includes(expectedPlatform) || platform !== expectedPlatform || env.CI !== 'true' || env.GITHUB_ACTIONS !== 'true' || env.RUNNER_ENVIRONMENT !== 'github-hosted' || env.GITHUB_REPOSITORY !== 'garbledhamster/putio-manager' || !env.RUNNER_TEMP) throw new Error('Native update execution is restricted to disposable hosted repository CI.');
+}
+
 /** Generated native fixture, never copied into a release application. */
 export async function prepareFixtureApplication(source, target, version) {
-  if (process.env.CI !== 'true' || !target.includes(`${path.sep}native-update-fixture${path.sep}`)) throw new Error('Use an isolated CI fixture application.');
+  assertHostedNativeFixture(process.platform);
+  if (!target.includes(`${path.sep}native-update-fixture${path.sep}`)) throw new Error('Use an isolated CI fixture application.');
   await cp(source, target, { recursive: true, verbatimSymlinks: true });
   const resources = process.platform === 'darwin' ? path.join(target, 'Contents', 'Resources') : path.join(target, 'resources');
   const appDirectory = path.join(resources, 'app');

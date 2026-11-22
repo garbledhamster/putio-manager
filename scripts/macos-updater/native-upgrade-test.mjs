@@ -1,10 +1,10 @@
 import { createServer } from 'node:http';
-import { createHash, generateKeyPairSync, sign, verify } from 'node:crypto';
+import { createHash, generateKeyPairSync, randomUUID, sign, verify } from 'node:crypto';
 import { mkdir, readFile, writeFile, chmod, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { stageMacUpdater } from './package.mjs';
-import { prepareFixtureApplication, waitForFixtureResult } from './native-fixture.mjs';
+import { assertHostedNativeFixture, prepareFixtureApplication, waitForFixtureResult } from './native-fixture.mjs';
 
 function run(command, args, options = {}) { const result = spawnSync(command, args, { stdio: 'pipe', ...options }); if (result.status !== 0 || result.error) throw new Error('Native Mac fixture command failed.'); return result.stdout; }
 function helperCycle(app, feed, { cancelReady = false, descriptor } = {}) {
@@ -29,10 +29,13 @@ function helperCycle(app, feed, { cancelReady = false, descriptor } = {}) {
   });
 }
 export async function testMacUpgrade() {
-  if (process.platform !== 'darwin' || process.env.CI !== 'true') throw new Error('Run real Mac updates only in disposable native CI.');
+  assertHostedNativeFixture('darwin');
   const root = path.resolve('release/native-update-fixture/mac');
   const profile = path.join(root, 'profile'), source = path.resolve(`release/PutioManager-darwin-${process.arch}/PutioManager.app`);
+  await mkdir(path.dirname(root), { recursive: true }); await mkdir(root);
   await mkdir(profile, { recursive: true });
+  // Both copies share one disposable identity; production defaults/termination are isolated.
+  const bundleIdentifier = `space.ourstuff.putiomanager.fixture.${process.arch}.${randomUUID().replaceAll('-', '')}`;
   const before = path.join(root, 'old', 'PutioManager.app'), after = path.join(root, 'new', 'PutioManager.app');
   const keys = generateKeyPairSync('ed25519'), jwk = keys.publicKey.export({ format: 'jwk' });
   const publicKey = Buffer.from(jwk.x, 'base64url').toString('base64');
@@ -46,6 +49,7 @@ export async function testMacUpgrade() {
     for (const [app, version] of [[before, '2.0.0'], [after, '2.0.1']]) {
       await prepareFixtureApplication(source, app, version);
       const plist = path.join(app, 'Contents', 'Info.plist');
+      run('/usr/bin/plutil', ['-replace', 'CFBundleIdentifier', '-string', bundleIdentifier, plist]);
       for (const key of ['CFBundleVersion', 'CFBundleShortVersionString']) run('/usr/bin/plutil', ['-replace', key, '-string', version, plist]);
       await stageMacUpdater(app, { fixturePublicKey: publicKey });
     }

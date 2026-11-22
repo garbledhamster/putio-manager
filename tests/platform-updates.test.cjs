@@ -9,6 +9,17 @@ const { createHash } = require('node:crypto');
 function adapterFactory() {
   return require('../dist/desktop/platform-updates.js').createNativeUpdateAdapter;
 }
+test('native Mac and Linux execution guards require the exact disposable hosted runner', async () => {
+  const { assertHostedNativeFixture } = await import('../scripts/macos-updater/native-fixture.mjs');
+  const env = { CI: 'true', GITHUB_ACTIONS: 'true', RUNNER_ENVIRONMENT: 'github-hosted', GITHUB_REPOSITORY: 'garbledhamster/putio-manager', RUNNER_TEMP: 'generated-fixture-temp' };
+  for (const platform of ['darwin', 'linux']) {
+    assert.doesNotThrow(() => assertHostedNativeFixture(platform, platform, env));
+    assert.throws(() => assertHostedNativeFixture(platform, 'win32', env), /restricted/);
+    for (const change of [{ CI: 'false' }, { GITHUB_ACTIONS: undefined }, { RUNNER_ENVIRONMENT: 'self-hosted' }, { GITHUB_REPOSITORY: 'generated/other-project' }, { RUNNER_TEMP: '' }]) assert.throws(() => assertHostedNativeFixture(platform, platform, { ...env, ...change }), /restricted/);
+    assert.throws(() => assertHostedNativeFixture(platform, platform, { CI: 'true' }), /restricted/);
+  }
+  assert.throws(() => assertHostedNativeFixture('win32', 'win32', env), /restricted/);
+});
 async function fixture(t, platform) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'native-updater-'));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));

@@ -149,10 +149,12 @@ test('tool failures disclose stable diagnostic codes without raw compiler or mac
 });
 
 test('native lifecycle diagnostics select only fixed stages and sanitized outcomes', async () => {
-  const {fixtureFailureStatus}=await import('../scripts/windows-installer/native-fixture.mjs');
+  const {fixtureFailureStatus,summarizeFixtureRegistration}=await import('../scripts/windows-installer/native-fixture.mjs');
   assert.deepEqual(fixtureFailureStatus('exe-a-install',Error('generated-private')),{schema:1,fixtureStage:'exe-a-install',code:'fixture-failed'});
   assert.deepEqual(fixtureFailureStatus('generated-private',Error('generated-private')),{schema:1,fixtureStage:'initialization',code:'fixture-failed'});
   assert.deepEqual(fixtureFailureStatus('assert-installed-a',Error('Fixture has duplicate, stale Burn, or incorrect MSI registration.')),{schema:1,fixtureStage:'assert-installed-a',code:'registration-mismatch'});
+  const identity={productCode:'GENERATED',version:'1.0.0'};
+  assert.deepEqual(summarizeFixtureRegistration([{productCode:'{GENERATED}',version:'1.0.0',windowsInstaller:true,hidden:false},{productCode:'private-unexpected',version:'private-unexpected',windowsInstaller:false,hidden:true}],identity),{total:2,msi:1,burn:1,hidden:1,expectedProduct:1,expectedVersion:1});
 });
 
 test('native updater acceptance cannot execute on an operator machine', async () => {

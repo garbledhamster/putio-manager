@@ -21,6 +21,9 @@ export function fixtureFailureStatus(stage,error) {
   const audit=auditFailureStatus(error);
   return {schema:1,fixtureStage:fixtureStages.has(stage)?stage:'initialization',code:fixtureCodes.get(error?.message)||'fixture-failed',...installerToolFailureStatus(error),...(audit.stage!=='initialization'?{audit}:{})};
 }
+export function summarizeFixtureRegistration(records,identity) {
+  return {total:records.length,msi:records.filter(record=>record.windowsInstaller===true).length,burn:records.filter(record=>record.windowsInstaller!==true).length,hidden:records.filter(record=>record.hidden===true).length,expectedProduct:records.filter(record=>sameGuid(record.productCode,identity.productCode)).length,expectedVersion:records.filter(record=>record.version===identity.version).length};
+}
 export function requireDisposableWindowsRunner(env = process.env,platform = process.platform) {
   if (platform !== 'win32' || env.GITHUB_ACTIONS !== 'true' || env.RUNNER_ENVIRONMENT !== 'github-hosted' || env.GITHUB_REPOSITORY !== 'garbledhamster/putio-manager' || !env.RUNNER_TEMP || !env.LOCALAPPDATA || !env.APPDATA) throw new Error('Native installer execution is restricted to disposable hosted repository CI.');
 }
@@ -54,7 +57,10 @@ export async function runNativeInstallerFixture() {
   }
   async function assertInstalled(identity) {
     const {records,owner} = await inventory();
-    if (records.length !== 1 || !records[0].windowsInstaller || records[0].hidden || !sameGuid(records[0].productCode,identity.productCode) || records[0].version !== identity.version) throw new Error('Fixture has duplicate, stale Burn, or incorrect MSI registration.');
+    if (records.length !== 1 || !records[0].windowsInstaller || records[0].hidden || !sameGuid(records[0].productCode,identity.productCode) || records[0].version !== identity.version) {
+      console.error(JSON.stringify({schema:1,registration:summarizeFixtureRegistration(records,identity)}));
+      throw new Error('Fixture has duplicate, stale Burn, or incorrect MSI registration.');
+    }
     if (!owner || owner.version !== identity.version || !sameGuid(owner.productCode,identity.productCode) || !owner.locationMatches) throw new Error('Fixture installed ownership registration is invalid.');
     if (await fs.readFile(path.join(installed,'resources/app/fixture-version.txt'),'utf8') !== identity.version) throw new Error('Installed fixture bytes do not match the expected version.');
     await assertPreserved();

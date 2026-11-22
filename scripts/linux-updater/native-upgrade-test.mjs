@@ -4,11 +4,12 @@ import { mkdir, readFile, writeFile, chmod } from 'node:fs/promises';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { packageLinuxApplication } from './build.mjs';
-import { prepareFixtureApplication, waitForFixtureResult } from '../macos-updater/native-fixture.mjs';
+import { assertHostedNativeFixture, prepareFixtureApplication, waitForFixtureResult } from '../macos-updater/native-fixture.mjs';
 
 export async function testLinuxUpgrade() {
-  if (process.platform !== 'linux' || process.env.CI !== 'true') throw new Error('Run real AppImage updates only in disposable native CI.');
+  assertHostedNativeFixture('linux');
   const root = path.resolve('release/native-update-fixture/linux'), profile = path.join(root, 'profile'), output = path.join(root, 'images');
+  await mkdir(path.dirname(root), { recursive: true }); await mkdir(root);
   await mkdir(profile, { recursive: true }); await mkdir(output, { recursive: true });
   const payloads = new Map();
   const server = createServer((request, response) => { const bytes = payloads.get(request.url); if (!bytes) { response.writeHead(404); response.end(); return; } response.writeHead(200, { 'content-length': bytes.length }); response.end(bytes); });
