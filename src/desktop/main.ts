@@ -15,6 +15,13 @@ import { defaultSettings } from "../core/settings";
 import { RemoteFile, Settings, Snapshot, validateAccountLink } from "../shared";
 import { runAgentCommand, safeAgentError } from "../server/agent-cli";
 import { readSettingsInput } from "../server/cli-input";
+import {DesktopUpdater} from './app-updates';
+import {createWindowsUpdateAdapter,readWindowsUpdateOutcome} from './windows-updates';
+import {createNativeUpdateAdapter} from './platform-updates';
+import {DesktopUpdateFailure} from './update-errors';
+import type {DesktopUpdateAdapter,NativeUpdateContext} from './update-types';
+import {updateAction,performUpdateAction,publicUpdateStatus,updateCliFailure} from './update-cli';
+import {createUpdateRequest,consumeUpdateRequest,replyUpdateRequest,waitUpdateResponse,removeUpdateRequest} from './desktop-update-control';
 
 // GUI launches may inherit a logging pipe that closes before Electron writes a warning.
 for (const stream of [process.stdout, process.stderr]) {
@@ -25,6 +32,10 @@ for (const stream of [process.stdout, process.stderr]) {
 
 const smoke = process.argv.includes("--smoke-test");
 const agentMode = process.argv.includes("--agent");
+const appUpdateMode=process.argv.includes('--app-update');
+const flushCliOutput=()=>new Promise<void>(resolve=>process.stdout.write('',()=>resolve()));
+// Keep the established profile identity through portable and installed editions.
+app.setName('putio-manager');
 const smokeDir = smoke ? mkdtempSync(path.join(os.tmpdir(), "putio-smoke-")) : "";
 if (smoke) app.setPath("userData", smokeDir);
 let window: BrowserWindow;
@@ -95,11 +106,15 @@ async function handleMagnet(value: string) {
 }
 const magnets = new MagnetQueue(handleMagnet);
 
-if (!smoke && !agentMode) {
+if (!smoke && !agentMode && !appUpdateMode) {
   if (!app.requestSingleInstanceLock()) app.exit(0);
   else {
     magnets.receive(process.argv);
-    app.on("second-instance", (_event, args) => { if (window && !window.isDestroyed()) { if (window.isMinimized()) window.restore(); window.show(); window.focus(); } magnets.receive(args); });
+    app.on("second-instance", (_event, args, _workingDirectory, additionalData) => {
+      if(additionalData&&Object.hasOwn(additionalData,'putioUpdateRequest')){dispatchUpdateRequest((additionalData as {putioUpdateRequest?:unknown}).putioUpdateRequest);return;}
+      if(args.includes('--app-update'))return;
+      if (window && !window.isDestroyed()) { if (window.isMinimized()) window.restore(); window.show(); window.focus(); } magnets.receive(args);
+    });
     app.on("open-url", (event, url) => { event.preventDefault(); magnets.receive([url]); });
   }
 }
@@ -115,8 +130,13 @@ let config: { url: string; label: string; encryptedToken: string; mode: "local" 
 let latest: Snapshot | undefined;
 let targetUpdates: Promise<unknown> = Promise.resolve();
 let targetGeneration = 0;
+let updatePreparing=false,updateQuiesced=false;
+let startupFinishedResolve!:()=>void;
+const startupFinished=new Promise<void>(resolve=>{startupFinishedResolve=resolve});
+function assertOperational(){if(updatePreparing)throw new Error('The desktop is preparing an update. Restart the app if the update does not finish.');}
 function updateTarget<T>(operation: () => Promise<T>): Promise<T> {
-  const result = targetUpdates.catch(() => {}).then(operation);
+  assertOperational();
+  const result = targetUpdates.catch(() => {}).then(()=>{assertOperational();return operation()});
   targetUpdates = result;
   return result;
 }
@@ -213,9 +233,10 @@ async function switchEngine(next: "local" | "remote") {
   }
   return latest!;
 }
-function selected(): EngineClient { if (!client) throw new Error("The selected engine is unavailable. Check Settings."); return client; }
+function selected(): EngineClient { assertOperational(); if (!client) throw new Error("The selected engine is unavailable. Check Settings."); return client; }
 function captureTarget() { return { engine: selected(), generation: targetGeneration }; }
 function assertTarget(target: { engine: EngineClient; generation: number }) {
+  assertOperational();
   if (client !== target.engine || targetGeneration !== target.generation) throw new Error("Engine selection changed. Try again.");
 }
 async function state() {
@@ -239,6 +260,10 @@ async function configureRemote(input: {url: string; label: string; token?: strin
     return { url: config.url, label: config.label, hasCredential: !!config.encryptedToken };
 }
 function bindHandlers() {
+  for(const [channel,action]of [['getDesktopUpdateStatus','status'],['checkDesktopUpdate','check'],['installDesktopUpdate','install'],['cancelDesktopUpdate','cancel']] as const)bind(channel,async(...args:unknown[])=>{
+    if(args.length)throw new Error('Invalid update request.');
+    const result=await performUpdateAction(await desktopUpdater(),action);return result.value;
+  });
   bind("getState", state);
   bind("listMagnetFolders", async (id: unknown, parent: string) => {
     const prompt = magnetPrompt;
@@ -257,7 +282,7 @@ function bindHandlers() {
     prompt.finish(folder);
   });
   bind("getDesktopIntegration", () => integrationStatus(integration));
-  bind("setMagnetRegistration", (enabled: unknown) => { if (typeof enabled !== "boolean") throw new Error("Invalid magnet registration choice."); return setMagnet(integration, enabled); });
+  bind("setMagnetRegistration", (enabled: unknown) => { assertOperational();if (typeof enabled !== "boolean") throw new Error("Invalid magnet registration choice."); return setMagnet(integration, enabled); });
   bind("getRemoteConnection", () => ({ url: config.url, label: config.label, hasCredential: !!config.encryptedToken }));
   bind("configureRemote", (input: {url: string; label: string; token?: string}) => updateTarget(async () => {
     const result = await configureRemote(input);
@@ -322,7 +347,60 @@ function bindHandlers() {
   });
   bind("openTokenPage", () => shell.openExternal("https://app.put.io/settings/account"));
 }
+let updaterPromise:Promise<DesktopUpdater>|undefined;
+function desktopUpdater():Promise<DesktopUpdater>{
+  return updaterPromise??= (async()=>{
+    const context:NativeUpdateContext={platform:process.platform,arch:process.arch,currentVersion:app.getVersion(),isPackaged:app.isPackaged,resourcesDirectory:process.resourcesPath,applicationDirectory:process.platform==='darwin'?path.resolve(path.dirname(process.execPath),'..','..'):path.dirname(process.execPath),executablePath:process.execPath,userDataDirectory:app.getPath('userData'),quitApplication:()=>{quitting=true;if(!appUpdateMode)app.quit()}};
+    const fakeVersion=app.getVersion().split('.').map((value,index)=>index===2?String(Number(value)+1):value).join('.');
+    const adapter:DesktopUpdateAdapter=smoke?{supported:true,prepare:async(_release,signal,progress)=>{for(const percent of[0,42,100]){if(signal.aborted)throw new DesktopUpdateFailure('installer-cancelled');progress({phase:'downloading',percent});await new Promise(resolve=>setTimeout(resolve,50));}throw new DesktopUpdateFailure('signature-invalid')},handoff:async()=>{throw new Error('Smoke tests must never hand off an installer.')}}:process.platform==='win32'?createWindowsUpdateAdapter(context):createNativeUpdateAdapter(context);
+    return new DesktopUpdater({currentVersion:context.currentVersion,platform:context.platform,arch:context.arch,adapter,previousOutcome:!smoke&&process.platform==='win32'?await readWindowsUpdateOutcome(context.userDataDirectory,context.currentVersion):undefined,
+      ...(smoke?{releaseCheck:async()=>{const platform=process.platform==='win32'?'windows':process.platform==='darwin'?'macos':'linux';return{version:fakeVersion,platform,arch:process.arch as 'x64'|'arm64',asset:{name:'generated-fixture',url:'https://github.com/garbledhamster/putio-manager/releases/download/generated/fixture',bytes:1,sha256:'0'.repeat(64)},assets:[]}}}:{}),
+      onStatus:status=>{if(window&&!window.isDestroyed()){window.webContents.send('desktop-update-status',publicUpdateStatus(status));if(updatePreparing&&status.phase==='failed')publish(unavailable('The desktop stopped for an update. Restart Putio Manager before you start more work.'))}},
+      beforeInstall:async()=>{
+        if(smoke)throw new Error('A generated fixture cannot install updates.');
+        if(!appUpdateMode)await startupFinished;
+        updatePreparing=true;
+        targetGeneration++;
+        await targetUpdates.catch(()=>{});
+        magnetPrompt?.finish(null);
+        // Remote.close only disconnects this desktop. It never stops the server.
+        if(retainedOwner){await retainedOwner.close();retainedOwner=undefined;}
+        if(client){await client.close();client=undefined;local=undefined;}
+        unsubscribe?.();unsubscribe=undefined;updateQuiesced=true;
+      }});
+  })();
+}
+async function handleUpdateRequest(id:unknown):Promise<void>{
+  try{await app.whenReady();const action=await consumeUpdateRequest(app.getPath('userData'),id);const result=await performUpdateAction(await desktopUpdater(),action,true);await replyUpdateRequest(app.getPath('userData'),id,result)}
+  catch(error){await replyUpdateRequest(app.getPath('userData'),id,updateCliFailure(error)).catch(()=>{})}
+}
+const updateRequests=new Set<Promise<void>>();
+function dispatchUpdateRequest(id:unknown):void{
+  if(updateRequests.size>=8)return;
+  const operation=handleUpdateRequest(id).finally(()=>updateRequests.delete(operation));updateRequests.add(operation);
+}
+async function runUpdateCli():Promise<void>{
+  let exitCode=1;
+  try{
+    const action=updateAction(process.argv.slice(process.argv.indexOf('--app-update')+1));
+    if(agentMode||smoke)throw new Error('update-failed');
+    const directory=app.getPath('userData'),id=await createUpdateRequest(directory,action);
+    if(!app.requestSingleInstanceLock({putioUpdateRequest:id})){
+      const response=await waitUpdateResponse(directory,id) as {ok?:unknown;accepted?:unknown;value?:unknown};
+      if(!response||typeof response.ok!=='boolean'||!response.value)throw new Error('update-failed');
+      const value=publicUpdateStatus(response.value as import('./update-types').DesktopUpdateStatus);
+      process.stdout.write(JSON.stringify({ok:response.ok,...(response.accepted===true?{accepted:true}:{}),value})+'\n');exitCode=response.ok?0:1;
+    }else{
+      await removeUpdateRequest(directory,id);
+      if(action!=='install')app.releaseSingleInstanceLock();
+      else app.on('second-instance',(_event,_args,_cwd,data)=>{if(data&&Object.hasOwn(data,'putioUpdateRequest'))dispatchUpdateRequest((data as {putioUpdateRequest?:unknown}).putioUpdateRequest)});
+      const result=await performUpdateAction(await desktopUpdater(),action);process.stdout.write(JSON.stringify(result)+'\n');exitCode=result.ok?0:1;
+    }
+  }catch(error){process.stdout.write(JSON.stringify(updateCliFailure(error))+'\n')}
+  finally{await Promise.allSettled([...updateRequests]);await flushCliOutput();quitting=true;app.exit(exitCode)}
+}
 app.whenReady().then(async () => {
+  if(appUpdateMode){await runUpdateCli();return;}
   if (agentMode) {
     // Agent administration never creates a window, starts a Local engine or exposes a credential.
     const args = process.argv.slice(process.argv.indexOf("--agent") + 1);
@@ -347,7 +425,7 @@ app.whenReady().then(async () => {
         exitCode = await runAgentCommand(selectedRemote, args, line => process.stdout.write(line), await readSettingsInput(args));
       }
     } catch (error) { process.stdout.write(JSON.stringify({ ok: false, error: safeAgentError(error) }) + "\n"); }
-    finally { await remote?.close(); app.exit(exitCode); }
+    finally { await remote?.close(); await flushCliOutput(); app.exit(exitCode); }
     return;
   }
   if (process.argv.includes("--verify-startup")) {
@@ -402,6 +480,7 @@ app.whenReady().then(async () => {
     tray.on("double-click", showWindow);
   }
   await switchEngine(config.mode);
+  startupFinishedResolve();
   await window.loadFile(path.join(__dirname, "../ui/index.html"));
   magnets.start();
   if (smoke) {
@@ -421,11 +500,12 @@ app.whenReady().then(async () => {
     await runUiScenario(window, { url: `http://127.0.0.1:${address.port}`, token: fixtureToken }, () => magnets.receive(["magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567"]));
     await server.close(); await remoteFixture.close(); const arg = process.argv.find(v => v.startsWith("--screenshot=")); if (arg) await fs.writeFile(arg.slice(13), (await window.webContents.capturePage()).toPNG()); console.log("SMOKE PASS"); fixture?.server.close(); app.quit(); }
 }).catch(error => {
-  if (agentMode) console.log(JSON.stringify({ ok: false, error: safeAgentError(error) }));
+  if(appUpdateMode)console.log(JSON.stringify(updateCliFailure(error)));
+  else if (agentMode) console.log(JSON.stringify({ ok: false, error: safeAgentError(error) }));
   else console.error("Startup or smoke test failed:", error.message);
   app.exit(1);
 });
 app.on("activate", () => { if (!smoke && window && !window.isDestroyed()) window.show(); });
 let closing = false;
-app.on("before-quit", event => { quitting = true; const owner = retainedOwner ?? client; if (!closing && owner) { event.preventDefault(); closing = true; unsubscribe?.(); void owner.close().then(() => app.quit(), () => app.quit()); } });
+app.on("before-quit", event => { quitting = true; const owner = retainedOwner ?? client; if (!updateQuiesced && !closing && owner) { event.preventDefault(); closing = true; unsubscribe?.(); void owner.close().then(() => app.quit(), () => app.quit()); } });
 app.on("window-all-closed", () => { if (quitting || process.platform !== "darwin") app.quit(); });

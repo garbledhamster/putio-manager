@@ -4,37 +4,47 @@ Browse your put.io account, copy files to your computer or a Linux download serv
 
 The desktop app runs on Windows, macOS and Linux. A separate headless engine can keep downloading on a server after you quit the desktop app. You can download to the destination directly or use an optional staging area on the engine host before copying to the destination. Source cleanup requires verified delivery and the job's saved cleanup choices.
 
-**Start here:** [Download](#download) · [Screenshot guide](#screenshot-guide) · [Desktop setup](#desktop-setup) · [Linux remote server](#linux-remote-server) · [CLI and safe analytics](#cli-and-safe-analytics) · [Everyday use](#everyday-use) · [Staging](#optional-staging-before-delivery) · [Jellyfin](#connect-a-jellyfin-library) · [Troubleshooting](#troubleshooting)
+**Start here:** [Download](#download) · [Screenshot guide](#screenshot-guide) · [Desktop setup](#desktop-setup) · [Desktop updates](#desktop-update) · [Linux remote server](#linux-remote-server) · [CLI and safe analytics](#cli-and-safe-analytics) · [Everyday use](#everyday-use) · [Staging](#optional-staging-before-delivery) · [Jellyfin](#connect-a-jellyfin-library) · [Troubleshooting](#troubleshooting)
 
 ## Download
 
-Choose your operating system and processor. Each archive contains the desktop app, the headless engine, a matching Node runtime and a launcher. No separate Node installation is needed to run these downloads.
+Choose your operating system and processor. Use an installed Windows app, a macOS app bundle or a Linux AppImage for desktop updates from **Settings → Updates**.
 
-| Platform | Most Intel / AMD computers | ARM computers |
+| Desktop edition | Most Intel / AMD computers | ARM computers |
 | --- | --- | --- |
-| Windows | [Windows x64 ZIP](https://github.com/garbledhamster/putio-manager/releases/download/v2.1.0/PutioManager-2.1.0-windows-x64.zip) | [Windows ARM64 ZIP](https://github.com/garbledhamster/putio-manager/releases/download/v2.1.0/PutioManager-2.1.0-windows-arm64.zip) |
-| macOS | [Intel Mac archive](https://github.com/garbledhamster/putio-manager/releases/download/v2.1.0/PutioManager-2.1.0-macos-x64.tar.gz) | [Apple silicon archive](https://github.com/garbledhamster/putio-manager/releases/download/v2.1.0/PutioManager-2.1.0-macos-arm64.tar.gz) |
-| Linux | [Linux x64 archive](https://github.com/garbledhamster/putio-manager/releases/download/v2.1.0/PutioManager-2.1.0-linux-x64.tar.gz) | [Linux ARM64 archive](https://github.com/garbledhamster/putio-manager/releases/download/v2.1.0/PutioManager-2.1.0-linux-arm64.tar.gz) |
+| Windows installer | [x64 EXE](https://github.com/garbledhamster/putio-manager/releases/download/v2.2.0/PutioManager-2.2.0-windows-x64-setup.exe) · [x64 MSI](https://github.com/garbledhamster/putio-manager/releases/download/v2.2.0/PutioManager-2.2.0-windows-x64-setup.msi) | [ARM64 EXE](https://github.com/garbledhamster/putio-manager/releases/download/v2.2.0/PutioManager-2.2.0-windows-arm64-setup.exe) · [ARM64 MSI](https://github.com/garbledhamster/putio-manager/releases/download/v2.2.0/PutioManager-2.2.0-windows-arm64-setup.msi) |
+| macOS app bundle | [Intel Mac app ZIP](https://github.com/garbledhamster/putio-manager/releases/download/v2.2.0/PutioManager-2.2.0-macos-x64-update.zip) | [Apple silicon app ZIP](https://github.com/garbledhamster/putio-manager/releases/download/v2.2.0/PutioManager-2.2.0-macos-arm64-update.zip) |
+| Linux desktop | [x64 AppImage](https://github.com/garbledhamster/putio-manager/releases/download/v2.2.0/PutioManager-2.2.0-linux-x64.AppImage) | [ARM64 AppImage](https://github.com/garbledhamster/putio-manager/releases/download/v2.2.0/PutioManager-2.2.0-linux-arm64.AppImage) |
 
-[Release notes and all files](https://github.com/garbledhamster/putio-manager/releases/tag/v2.1.0) · [SHA-256 checksums](https://github.com/garbledhamster/putio-manager/releases/download/v2.1.0/SHA256SUMS.txt)
+For a **headless Linux server**, choose the matching portable archive below. Each portable archive contains the desktop app, the headless engine, a matching Node runtime and a launcher. You do not need a separate Node installation. Windows installers, macOS app ZIPs and Linux AppImages contain the desktop edition; use the portable archive for the headless tools.
 
-These are **unsigned portable distributions**, not signed installers. The operating system may block an unsigned app. Follow your organization's policy; do not disable security software to run it. macOS signing and notarization and Windows code signing are not included. The release's CI results describe which native builds and isolated checks passed; they do not establish playback or compatibility with every computer.
+| Portable distribution | Most Intel / AMD computers | ARM computers |
+| --- | --- | --- |
+| Windows | [Windows x64 ZIP](https://github.com/garbledhamster/putio-manager/releases/download/v2.2.0/PutioManager-2.2.0-windows-x64.zip) | [Windows ARM64 ZIP](https://github.com/garbledhamster/putio-manager/releases/download/v2.2.0/PutioManager-2.2.0-windows-arm64.zip) |
+| macOS | [Intel Mac archive](https://github.com/garbledhamster/putio-manager/releases/download/v2.2.0/PutioManager-2.2.0-macos-x64.tar.gz) | [Apple silicon archive](https://github.com/garbledhamster/putio-manager/releases/download/v2.2.0/PutioManager-2.2.0-macos-arm64.tar.gz) |
+| Linux | [Linux x64 archive](https://github.com/garbledhamster/putio-manager/releases/download/v2.2.0/PutioManager-2.2.0-linux-x64.tar.gz) | [Linux ARM64 archive](https://github.com/garbledhamster/putio-manager/releases/download/v2.2.0/PutioManager-2.2.0-linux-arm64.tar.gz) |
+
+[Release notes and all files](https://github.com/garbledhamster/putio-manager/releases/tag/v2.2.0) · [SHA-256 checksums](https://github.com/garbledhamster/putio-manager/releases/download/v2.2.0/SHA256SUMS.txt)
+
+These links target the versioned v2.2.0 release. If a file is not available, keep your current installation and wait for that release. Read the release's CI results for its native build and installation checks.
+
+The release does not include Windows publisher code signing or macOS Developer ID signing and notarization. The operating system can block the app or installer. Follow your organization's policy and the operating system's normal permission process. Do not disable security software. Signed update metadata and download hashes check the published update bytes; they do not replace the operating system's publisher identity checks.
 
 To find your processor: Windows **Settings → System → About → System type**; macOS **Apple menu → About This Mac**; Linux `uname -m` (`x86_64` means x64, `aarch64` means ARM64). Linux desktop mode also needs the usual Electron desktop libraries and a graphical session. Linux server mode does not need Electron or a display.
 
 <details>
-<summary>Verify a downloaded archive</summary>
+<summary>Verify a downloaded file</summary>
 
 Download `SHA256SUMS.txt` from the same release. In PowerShell:
 
 ```powershell
-Get-FileHash .\PutioManager-2.1.0-windows-x64.zip -Algorithm SHA256
+Get-FileHash .\PutioManager-2.2.0-windows-x64.zip -Algorithm SHA256
 ```
 
 On macOS:
 
 ```sh
-shasum -a 256 PutioManager-2.1.0-macos-arm64.tar.gz
+shasum -a 256 PutioManager-2.2.0-macos-arm64.tar.gz
 ```
 
 On Linux, with the checksums and archive in the same directory:
@@ -43,7 +53,7 @@ On Linux, with the checksums and archive in the same directory:
 sha256sum --check --ignore-missing SHA256SUMS.txt
 ```
 
-Compare the entire hash for the exact filename. A mismatch means you should obtain a fresh copy before extracting it. Checksums detect a mismatched file; they are not a code-signing identity.
+Compare the entire hash for the exact filename. For an EXE, MSI, app ZIP or AppImage, use that file in the same hash command. A mismatch means you should obtain a fresh copy before opening it. Checksums detect a mismatched file; they are not a code-signing identity.
 
 </details>
 
@@ -68,6 +78,9 @@ Every image below comes from the real app running against a newly generated, iso
     <td><a href="docs/images/07-remote-connection.png"><img src="docs/images/07-remote-connection.png" alt="7. Remote engine connected to a synthetic loopback server with credential kept out of view" width="520"></a><br><b>7. Connect to your Linux engine.</b> <a href="#connect-the-desktop-through-ssh">SSH and Remote setup</a></td>
     <td><a href="docs/images/08-remote-download-root.png"><img src="docs/images/08-remote-download-root.png" alt="8. Downloads settings showing a synthetic remote root, Use root and engine staging controls" width="520"></a><br><b>8. Select the server destination.</b> <a href="#connect-the-desktop-through-ssh">Remote download root</a></td>
   </tr>
+  <tr>
+    <td colspan="2"><a href="docs/images/09-software-updates.png"><img src="docs/images/09-software-updates.png" alt="9. Desktop Updates showing a generated newer version and Update and restart while the demonstration Remote engine is unavailable" width="520"></a><br><b>9. Update the desktop app, even with Remote offline.</b> <a href="#desktop-update">Desktop update steps</a>. The available version in this image is a generated test release.</td>
+  </tr>
 </table>
 
 ## Understand Local and Remote
@@ -89,35 +102,40 @@ Download destinations, staging, limits, rules and account authorization belong t
 
 ### Windows
 
-1. Download the ZIP for your processor and extract the **entire archive** to a folder you intend to keep. Do not launch from inside the ZIP.
-2. Open the extracted `PutioManager-win32-x64-distribution` folder (or its ARM64 equivalent).
-3. Double-click `launch.cmd`. For an explicit desktop launch from PowerShell in that folder:
+1. Download the **EXE** for your processor. Choose the **MSI** instead if you need to run Windows Installer directly. Verify the file against the checksum from the same release.
+2. Sign in as the Windows user who will use the app. Run the installer as that user and follow its prompts. The app installs for that user in `%LOCALAPPDATA%\Programs\PutioManager` and adds a Start menu shortcut. Do not run the installer as a different administrator account.
+3. Open **Putio Manager** from the Start menu. Continue with [account and destination](#link-your-account-and-choose-a-destination).
+4. Keep a copy of the installer if you will need repair. Use Windows **Settings → Apps → Installed apps → Putio Manager** to remove the installed application. The uninstaller keeps the app profile and downloaded files.
 
-   ```powershell
-   .\launch.cmd --mode gui
-   ```
+The EXE contains the same MSI that you can download separately. Both install one application owned by Windows Installer. To upgrade, run a newer EXE or MSI for the **same processor architecture and Windows user**. You can switch between EXE and MSI for an upgrade; you do not need to remove the app first. Do not install both architectures over the same installation. A change of architecture needs a separate migration plan.
 
-4. Keep the `desktop` folder, `node.exe`, `launch.cjs` and other distribution files together. Make a shortcut to `launch.cmd` if desired.
-5. Continue with [account and destination](#link-your-account-and-choose-a-destination).
+If you prefer a portable copy, extract the entire Windows ZIP to a permanent folder. Open its `PutioManager-win32-x64-distribution` folder, or the ARM64 equivalent, and double-click `launch.cmd`. Keep its distribution files together. To move from a portable copy to the installed edition, quit the portable app from its tray first, run the installer as the same Windows user, and open the Start menu app. Check your saved settings before deleting the old program folder. Do not copy your private profile into the application folder.
 
 ### macOS
 
-1. Download the Apple silicon or Intel archive and extract it. Keep the whole extracted distribution together in a permanent location.
-2. Open `desktop/PutioManager.app`, or open Terminal in the distribution folder and run:
+1. Download the app ZIP for your Mac's processor and verify its checksum. Extract `PutioManager.app`.
+2. Move the app into an Applications folder that your user can manage. Open it from there. Keep it out of a temporary extraction directory.
+3. If macOS blocks the app, use the policy-approved process in [Apple's guidance for opening apps safely](https://support.apple.com/en-us/102445). Do not disable Gatekeeper or remove security attributes as a setup step.
+4. Continue with [account and destination](#link-your-account-and-choose-a-destination).
 
-   ```sh
-   ./launch --mode gui
-   ```
-
-3. If macOS blocks the unsigned application, use the normal policy-approved app-opening process described by [Apple's guidance for opening apps safely](https://support.apple.com/en-us/102445). Do not disable Gatekeeper or remove security attributes as a setup step.
-4. Continue below. The server setup later in this guide is optional; Local mode works on the Mac itself.
+The Mac app includes Sparkle for in-app updates. Its update ZIP contains only `PutioManager.app`; it does not replace a headless server, a sibling Node runtime or other files from a portable distribution. If you choose the full portable archive, keep its files together and open `desktop/PutioManager.app`, or use `./launch --mode gui`. A headless Linux engine remains a separate installation.
 
 ### Linux desktop
 
-1. Extract the correct archive in a permanent directory on your desktop machine.
-2. In a graphical session, run `./launch --mode gui` from that directory. If launching reports a missing shared library, install the Electron runtime dependencies appropriate to your distribution through its package manager.
-3. Run as your ordinary user. Do not use root or `--no-sandbox` to work around a desktop launch error.
-4. Continue below. For a server without a display, use [Linux remote server](#linux-remote-server).
+1. Download the AppImage for your processor and verify its checksum. Put it in a permanent folder that your ordinary user can write to. Automatic replacement needs write access to that folder and space for the new app.
+2. In a terminal in that folder, make it executable and start it. For x64:
+
+   ```sh
+   chmod u+x PutioManager-2.2.0-linux-x64.AppImage
+   ./PutioManager-2.2.0-linux-x64.AppImage
+   ```
+
+3. Install your distribution's supported AppImage and Electron desktop prerequisites if the app reports a missing runtime component. Run in a graphical session as your ordinary user. Do not use root or `--no-sandbox` to work around a launch error.
+4. Continue with [account and destination](#link-your-account-and-choose-a-destination).
+
+Use the AppImage itself for desktop updates. The updater checks the new file, prepares it beside the existing AppImage on the same filesystem, and replaces the app in one rename before restarting it. It keeps the existing filename, so use **Installed version** in Settings to check the running version. An extracted portable Linux desktop cannot replace itself this way; install the AppImage or use the [manual portable procedure](#manual-portable-desktop-replacement).
+
+For a server without a display, use the Linux portable archive and [Linux remote server](#linux-remote-server). An AppImage is not the headless service package.
 
 ### Link your account and choose a destination
 
@@ -150,13 +168,13 @@ The server needs outbound HTTPS to put.io, sufficient disk space, a supported Li
 Download the matching **Linux** archive and `SHA256SUMS.txt` from the release. Verify its hash, then extract the archive on the server. For x64:
 
 ```sh
-tar -xzf PutioManager-2.1.0-linux-x64.tar.gz
+tar -xzf PutioManager-2.2.0-linux-x64.tar.gz
 sudo install -d -m 0755 /opt/putio-manager
-sudo mv PutioManager-linux-x64-distribution /opt/putio-manager/2.1.0
-sudo chown -R root:root /opt/putio-manager/2.1.0
+sudo mv PutioManager-linux-x64-distribution /opt/putio-manager/2.2.0
+sudo chown -R root:root /opt/putio-manager/2.2.0
 ```
 
-For ARM64 use the ARM64 archive and extracted folder name. `/opt/putio-manager/2.1.0` must be unused before this move. Keeping program files root-owned prevents the download service from rewriting its executable.
+For ARM64 use the ARM64 archive and extracted folder name. `/opt/putio-manager/2.2.0` must be unused before this move. Keeping program files root-owned prevents the download service from rewriting its executable.
 
 Create the service identity and writable data locations once:
 
@@ -172,7 +190,7 @@ If the account already exists, inspect it and reuse it only if it is the intende
 Run this in an **interactive server terminal**:
 
 ```sh
-sudo -u putio /opt/putio-manager/2.1.0/launch --mode headless setup --config /var/lib/putio-manager/private/config.json
+sudo -u putio /opt/putio-manager/2.2.0/launch --mode headless setup --config /var/lib/putio-manager/private/config.json
 ```
 
 At the prompts enter:
@@ -201,8 +219,8 @@ RequiresMountsFor=/srv/putio-downloads /var/lib/putio-manager
 Type=simple
 User=putio
 Group=putio
-WorkingDirectory=/opt/putio-manager/2.1.0
-ExecStart=/opt/putio-manager/2.1.0/node /opt/putio-manager/2.1.0/headless/server/cli.js serve --config /var/lib/putio-manager/private/config.json
+WorkingDirectory=/opt/putio-manager/2.2.0
+ExecStart=/opt/putio-manager/2.2.0/node /opt/putio-manager/2.2.0/headless/server/cli.js serve --config /var/lib/putio-manager/private/config.json
 Restart=on-failure
 RestartSec=5
 TimeoutStopSec=60
@@ -231,7 +249,7 @@ sudo journalctl -u putio-manager.service -n 30 --no-pager
 Look for **Server ready** in the service log. Check its authenticated status locally:
 
 ```sh
-sudo -u putio /opt/putio-manager/2.1.0/launch --mode headless status --config /var/lib/putio-manager/private/config.json
+sudo -u putio /opt/putio-manager/2.2.0/launch --mode headless status --config /var/lib/putio-manager/private/config.json
 ```
 
 Status uses the safe operational format described under [CLI and safe analytics](#cli-and-safe-analytics). It excludes filenames, paths and credentials. Counts and byte totals still describe private activity. An active systemd process alone does not prove the account is connected or a download finished.
@@ -241,7 +259,7 @@ Status uses the safe operational format described under [CLI and safe analytics]
 With the service running, use another interactive server terminal:
 
 ```sh
-sudo -u putio /opt/putio-manager/2.1.0/launch --mode headless auth --config /var/lib/putio-manager/private/config.json
+sudo -u putio /opt/putio-manager/2.2.0/launch --mode headless auth --config /var/lib/putio-manager/private/config.json
 ```
 
 Open the displayed **put.io** authorization link in your browser and approve the connection. That link is temporary and private; do not capture it in documentation or logs. Then check status again. You can also connect the desktop to the Remote engine and use **Connect with put.io** there; the account is still saved on the server.
@@ -448,10 +466,60 @@ For deployment-specific library details, consult [Jellyfin's library documentati
 
 ### Desktop update
 
-1. Pause the selected engine and wait for active work to suspend or cross its safe publication/cleanup boundary. Inspect any error. For Local mode, use **Quit** from the tray before replacing program files; closing the window can leave it running. A Remote server keeps its own lifecycle.
-2. Download and verify the new archive. Extract it to a **new** version folder rather than merging files into the old bundle.
-3. Keep the old bundle until the new one opens correctly. Point shortcuts at the new launcher, start it, check the selected engine/account/destination, then Resume if appropriate.
-4. Update a Remote server to a matching protocol version before using a newer client that requires it. Account state and history are separate from portable program files; do not copy your private profile into a release archive or public issue.
+Use **Settings → Updates** on an updating desktop edition. This page works even when the Remote server is offline. It shows the installed desktop version, the available version, the operation's progress and the next action.
+
+1. Open **Settings → Updates** and select **Check for updates**.
+2. Read the available version and status. The app checks the fixed `garbledhamster/putio-manager` GitHub repository for a newer stable release. It ignores drafts, prereleases and older versions. It accepts versioned release files only after it verifies the update metadata and required download checks.
+3. Save changes in other apps. If you want downloads to remain paused after the restart, pause the selected engine before continuing. Select **Update and restart** when you are ready for this desktop app to close and reopen.
+4. Wait for download and verification. Use **Cancel download** if you change your mind. Cancellation is available before the app starts saving its work for installation. During preparation and installation, wait for the result instead of closing the app or starting another installer.
+5. The app closes its Local engine through its normal save and recovery checks before it installs. If it cannot close safely, it stops the update and shows the next action. In Remote mode it disconnects this client; the server keeps its own lifecycle.
+6. After the app restarts, open **Settings → Updates**. Confirm **Installed version** matches the version you chose. Check the selected engine, saved account connection, destinations, rules, history and any recovery warnings. Resume work only when intended. A downloaded file or a full progress bar does not prove installation.
+
+The updater preserves the existing app profile and downloaded files. It does not change your selected engine or turn a Remote connection failure into a Local engine. It does not update or restart a Remote server. Keep the server on a compatible protocol version through the separate [Linux server upgrade](#linux-server-backup-and-upgrade) procedure.
+
+On Windows, the updater uses the same per-user MSI ownership as the EXE and MSI downloads. On macOS, Sparkle verifies and replaces the app bundle. On Linux, the updater verifies and replaces the AppImage. A failure before replacement leaves the current app in place. After an installation error, read the status and verify the installed version before trying again. If Windows reports a computer restart is required, save your work and restart Windows when you are ready; the updater does not force a reboot.
+
+If the app says the update signature or download could not be verified, do not install that file by hand. Keep the installed app and check for updates again later. If automatic updates are unavailable for your copy, use the matching desktop edition from [Download](#download).
+
+### Desktop update commands
+
+Use the desktop executable's `--app-update` option for these software operations. This interface does not read account settings or download jobs, contact the Remote engine, or start a Local engine. It reports only the desktop update fields and controlled messages. You can use it without a configured Remote connection. It is separate from `--agent` and the headless server commands.
+
+For the installed Windows app, run in PowerShell:
+
+```powershell
+& "$env:LOCALAPPDATA\Programs\PutioManager\PutioManager.exe" --app-update status
+& "$env:LOCALAPPDATA\Programs\PutioManager\PutioManager.exe" --app-update check
+& "$env:LOCALAPPDATA\Programs\PutioManager\PutioManager.exe" --app-update install
+& "$env:LOCALAPPDATA\Programs\PutioManager\PutioManager.exe" --app-update cancel
+```
+
+For a Mac app in `/Applications`, use Terminal:
+
+```sh
+/Applications/PutioManager.app/Contents/MacOS/PutioManager --app-update status
+/Applications/PutioManager.app/Contents/MacOS/PutioManager --app-update check
+/Applications/PutioManager.app/Contents/MacOS/PutioManager --app-update install
+/Applications/PutioManager.app/Contents/MacOS/PutioManager --app-update cancel
+```
+
+For an AppImage, run from its folder. Replace the filename if yours differs:
+
+```sh
+./PutioManager-2.2.0-linux-x64.AppImage --app-update status
+./PutioManager-2.2.0-linux-x64.AppImage --app-update check
+./PutioManager-2.2.0-linux-x64.AppImage --app-update install
+./PutioManager-2.2.0-linux-x64.AppImage --app-update cancel
+```
+
+Run one command at a time. `status` reads the current update state; `check` requests a fresh release check. `install` authorizes the desktop restart after verification. When a desktop process is already running, it handles the request; an `accepted` response confirms the request, not a finished installation. `cancel` requests cancellation before preparation. Check `status` for the result. The installed version after restart is the completion check.
+
+### Manual portable desktop replacement
+
+1. Pause work if needed and use **Quit** from the desktop tray. Closing its window can leave the app running. A Remote server keeps running on its own host.
+2. Download and verify the new portable archive. Extract it to a new version folder. Keep the old folder until you check the replacement.
+3. Start the new app or launcher as the same operating-system user. Update your shortcut to the new program folder. Check the selected engine, account connection, destination, rules and history before resuming.
+4. Keep your profile, state and downloaded files outside release archives and public support reports. Do not merge the new program files into the old bundle or copy private configuration into them.
 
 ### Linux server backup and upgrade
 
@@ -496,6 +564,10 @@ Only one process can own an engine state directory. If startup reports an owners
 | **Move unavailable in Remote mode** | Update the remote engine to a version advertising file-move support. Do not switch to Local just to make the control available. |
 | **Window disappeared after Close** | Check the system tray. Use **Show** to reopen it and **Quit** to exit the desktop process. |
 | **Linux desktop sandbox/runtime error** | Use your distribution's supported Electron prerequisites and sandbox configuration as an ordinary user; do not launch the GUI as root or add `--no-sandbox`. Headless mode uses the bundled Node runtime. |
+| **Desktop update cannot contact GitHub** | Check the desktop internet connection, then select **Check for updates** again. A Remote server connection is not required. |
+| **Update signature or download verification failed** | Keep the installed app. Do not bypass verification or install the rejected file by hand. Check for updates again later. |
+| **Windows Installer busy / update cancelled** | Finish the other installation or wait until you are ready. Reopen the app, check **Installed version**, then retry. |
+| **Desktop update unavailable** | Use the installed Windows app, macOS app bundle with Sparkle, or a writable Linux AppImage. Update a headless Linux server through its own service procedure. |
 | **Unsigned app blocked** | Review the source/release provenance and your operating-system/organization policy. Do not disable protections as a workaround. |
 
 For help, open an [issue](https://github.com/garbledhamster/putio-manager/issues) with the app version, OS/architecture, Local or Remote mode, exact sanitized error and the steps to reproduce with generated examples. Remove account identifiers, tokens, authorization links, real filenames, private paths, hostnames/IPs and logs containing them. A tiny fictional example is more useful than a full private configuration or state archive.
@@ -546,10 +618,10 @@ On Linux, a server without a display should use the headless CLI below. Desktop 
 In the fictional server layout used above, run commands as the dedicated service identity:
 
 ```sh
-sudo -u putio /opt/putio-manager/2.1.0/launch --mode headless agent help
-sudo -u putio /opt/putio-manager/2.1.0/launch --mode headless agent status --config /var/lib/putio-manager/private/config.json
-sudo -u putio /opt/putio-manager/2.1.0/launch --mode headless agent analytics --config /var/lib/putio-manager/private/config.json
-sudo -u putio /opt/putio-manager/2.1.0/launch --mode headless agent storage --config /var/lib/putio-manager/private/config.json
+sudo -u putio /opt/putio-manager/2.2.0/launch --mode headless agent help
+sudo -u putio /opt/putio-manager/2.2.0/launch --mode headless agent status --config /var/lib/putio-manager/private/config.json
+sudo -u putio /opt/putio-manager/2.2.0/launch --mode headless agent analytics --config /var/lib/putio-manager/private/config.json
+sudo -u putio /opt/putio-manager/2.2.0/launch --mode headless agent storage --config /var/lib/putio-manager/private/config.json
 ```
 
 Use your own installed version directory. `PUTIO_MANAGER_CONFIG` can supply the private config path instead of `--config`. The application reads its client credential internally. No token command argument is accepted. Normal `status`, `pause` and `resume` also use the safe status format. The explicit `agent` interface rejects human-only `setup`, `serve` and `auth` commands. Human account linking remains a separate interactive action.
@@ -579,7 +651,7 @@ Historical speed values do not contribute to current throughput. `deliveryVerifi
 For direct downloads on the server, turn temporary staging off for **new jobs** through stdin:
 
 ```sh
-printf '%s\n' '{"stageDownloads":false}' | sudo -u putio /opt/putio-manager/2.1.0/launch --mode headless agent settings-set --json --config /var/lib/putio-manager/private/config.json
+printf '%s\n' '{"stageDownloads":false}' | sudo -u putio /opt/putio-manager/2.2.0/launch --mode headless agent settings-set --json --config /var/lib/putio-manager/private/config.json
 ```
 
 This does not change an existing job's saved staging choice or move work onto the desktop. Root selection and all downloads still belong to the server. Path, token and unknown setting fields are rejected by this safe interface. Keep server folder provisioning in the authorized server setup procedure.
@@ -589,9 +661,9 @@ This does not change an existing job's saved staging choice or move work onto th
 Run service lifecycle commands on the Linux service host using its existing operating-system permissions:
 
 ```sh
-/opt/putio-manager/2.1.0/launch --mode headless service help
-/opt/putio-manager/2.1.0/launch --mode headless service status
-sudo /opt/putio-manager/2.1.0/launch --mode headless service restart
+/opt/putio-manager/2.2.0/launch --mode headless service help
+/opt/putio-manager/2.2.0/launch --mode headless service status
+sudo /opt/putio-manager/2.2.0/launch --mode headless service restart
 ```
 
 These commands control only `putio-manager.service`. They do not accept another unit, run a shell, request a password dialog or reboot the machine. A user service may use the trailing `--user` option. An administrator may supply the necessary permission through the existing system policy; the CLI does not grant it.

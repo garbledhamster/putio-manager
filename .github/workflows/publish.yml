@@ -1,5 +1,9 @@
 name: Publish verified downloads
 on:
+  workflow_run:
+    workflows: [Build native downloads]
+    types: [completed]
+    branches: [main]
   workflow_dispatch:
     inputs:
       build_run_id:
@@ -14,22 +18,27 @@ concurrency:
   cancel-in-progress: false
 jobs:
   validate:
+    if: github.repository == 'garbledhamster/putio-manager' && (github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success')
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     outputs:
       sha: ${{ steps.build.outputs.sha }}
       version: ${{ steps.version.outputs.version }}
+      skip: ${{ steps.version.outputs.skip }}
     steps:
-      - name: Require a successful build from this repository
+      - name: Require a successful native main-branch build from this repository
         id: build
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          BUILD_RUN_ID: ${{ inputs.build_run_id }}
+          BUILD_RUN_ID: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.id || inputs.build_run_id }}
         shell: bash
         run: |
+          set -euo pipefail
+          [[ "$GH_REPO" == 'garbledhamster/putio-manager' ]]
           [[ "$BUILD_RUN_ID" =~ ^[0-9]+$ ]]
           gh api "repos/$GH_REPO/actions/runs/$BUILD_RUN_ID" > "$RUNNER_TEMP/build-run.json"
-          jq -e --arg repo "$GH_REPO" '.head_repository.full_name == $repo and .path == ".github/workflows/build.yml" and .status == "completed" and .conclusion == "success" and .head_branch == "main" and (.event == "push" or .event == "workflow_dispatch")' "$RUNNER_TEMP/build-run.json"
+          jq -e --arg repo "$GH_REPO" --argjson run "$BUILD_RUN_ID" '.id == $run and .repository.full_name == $repo and .head_repository.full_name == $repo and .path == ".github/workflows/build.yml" and .status == "completed" and .conclusion == "success" and .head_branch == "main" and (.event == "push" or .event == "workflow_dispatch") and (.head_sha | test("^[a-f0-9]{40}$"))' "$RUNNER_TEMP/build-run.json" > /dev/null
           echo "sha=$(jq -r .head_sha "$RUNNER_TEMP/build-run.json")" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -38,60 +47,85 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24
+      - name: Skip already versioned releases without overwriting tags
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/release-publication.mjs version-state
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        if: steps.version.outputs.skip != 'true'
         with:
           name: reviewed-release-bundle
           path: release-assets
-          run-id: ${{ inputs.build_run_id }}
+          run-id: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.id || inputs.build_run_id }}
           github-token: ${{ github.token }}
-      - run: npm run release:checksums -- --verify
-      - name: Verify source and exact archives again
+      - name: Verify exact audited build inventory and checksums
+        if: steps.version.outputs.skip != 'true'
+        run: |
+          node scripts/release-catalog.mjs verify release-assets build
+          node scripts/release-checksums.mjs --verify release-assets build
+      - name: Repeat source and readable archive privacy audits
+        if: steps.version.outputs.skip != 'true'
         shell: bash
         run: |
+          set -euo pipefail
           node scripts/verify-public-release.mjs source
-          for archive in release-assets/PutioManager-*; do
+          for archive in release-assets/PutioManager-*-windows-*.zip release-assets/PutioManager-*-macos-*.tar.gz release-assets/PutioManager-*-linux-*.tar.gz; do
             node scripts/verify-public-release.mjs artifact "$archive"
           done
-      - id: version
-        shell: bash
-        run: echo "version=$(node -p 'require("./package.json").version')" >> "$GITHUB_OUTPUT"
+          for archive in release-assets/*-update.zip; do
+            node scripts/verify-public-release.mjs app "$archive" --platform darwin
+          done
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: steps.version.outputs.skip != 'true'
         with:
-          name: publication-bundle
+          name: validated-unsigned-publication-bundle
           path: release-assets/*
           if-no-files-found: error
           retention-days: 14
   publish:
     needs: validate
+    if: needs.validate.outputs.skip != 'true'
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     permissions:
       contents: write
       actions: read
     steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.validate.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: publication-bundle
+          name: validated-unsigned-publication-bundle
           path: release-assets
-      - name: Publish the verified version
+      - name: Revalidate the authenticated build bytes before signing
+        run: |
+          node scripts/release-catalog.mjs verify release-assets build
+          node scripts/release-checksums.mjs --verify release-assets build
+      - name: Sign exact update metadata and Mac archives
+        env:
+          PUTIO_UPDATE_SIGNING_KEY: ${{ secrets.PUTIO_UPDATE_SIGNING_KEY }}
+        run: node scripts/sign-updates.mjs release-assets
+      - name: Verify every signature and regenerate the complete published checksums
+        run: |
+          node scripts/sign-updates.mjs --verify release-assets
+          node --input-type=module -e "import {unlink} from 'node:fs/promises'; await unlink('release-assets/SHA256SUMS.txt');"
+          node scripts/release-catalog.mjs verify release-assets published
+          node scripts/release-checksums.mjs release-assets published
+          node scripts/release-checksums.mjs --verify release-assets published
+      - name: Upload complete draft, verify every remote digest, then publish
         env:
           GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
           RELEASE_SHA: ${{ needs.validate.outputs.sha }}
-        shell: bash
-        run: |
-          [[ "$RELEASE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
-          [[ "$RELEASE_SHA" =~ ^[a-f0-9]{40}$ ]]
-          if gh api "repos/$GH_REPO/git/ref/tags/v$RELEASE_VERSION" > /dev/null 2>&1; then
-            echo "This version already has a tag. Choose a new version rather than changing an existing release."
-            exit 1
-          fi
-          cat > "$RUNNER_TEMP/release-notes.md" <<'NOTES'
-          Portable Putio Manager desktop and remote-download server bundles for Windows, macOS and Linux, each in x64 and ARM64 editions.
-
-          These downloads are unsigned. Each archive includes the matching Node runtime, desktop app, headless engine, setup guide and licenses. See the README for setup, safe account linking and Linux service instructions. Verify downloads against SHA256SUMS.txt.
-
-          Documentation images use generated demonstration data.
-          NOTES
-          gh release create "v$RELEASE_VERSION" release-assets/* --repo "$GH_REPO" --target "$RELEASE_SHA" --title "Putio Manager $RELEASE_VERSION" --notes-file "$RUNNER_TEMP/release-notes.md"
-
+        run: node scripts/release-publication.mjs publish release-assets "$RELEASE_SHA"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: verified-signed-publication-bundle
+          path: release-assets/*
+          if-no-files-found: error
+          retention-days: 14

@@ -12,8 +12,8 @@ const distributionRoots = new Set(['desktop', 'headless']);
 const distributionFiles = new Set(['node', 'node.exe', 'launch', 'launch.cmd', 'launch.cjs', 'README.md', 'LICENSE-PutioManager.txt', 'LICENSE-Node.txt', 'NODE-PROVENANCE.txt']);
 const galleryPath = /^docs\/images\/\d{2}-[a-z0-9-]+\.png$/;
 const privateSegments = /^(?:\.git|project-context|protected-backups|\.ssh|\.aws|\.codex|\.obsidian|\.smart-env|user-?data|private-profile|runtime-state)$/i;
-const privateNames = /^(?:\.env(?:\..*)?|\.npmrc|\.DS_Store|id_(?:rsa|ed25519)|client-token|credential-key|server-config\.json|settings\.json|engine-state\.json|cookies|login data|local state|preferences)$/i;
-const textExtension = /\.(?:[cm]?js|[cm]?ts|json|html?|css|md|txt|xml|config|settings|ya?ml|svg|sh|cmd|ps1|cjs|mts|map)$/i;
+const privateNames = /^(?:\.env(?:\..*)?|\.npmrc|\.DS_Store|id_(?:rsa|ed25519)|client-token|credential-key|server-config\.json|remote-client\.json|settings\.json|engine(?:-state)?\.json|cookies|login data|local state|preferences)$/i;
+const textExtension = /\.(?:[cm]?js|[cm]?ts|json|html?|css|md|txt|xml|wxl|wxs|rtf|manifest|resx|plist|desktop|ini|config|settings|ya?ml|svg|sh|cmd|ps1|cjs|mts|map)$/i;
 const maximumExpandedBytes = 2 * 1024 ** 3;
 
 function safeName(name) {
@@ -33,8 +33,8 @@ function checkLink(name, target) {
 }
 
 function isAuthored(name, mode) {
-  if (mode === 'source') return true;
-  return name.startsWith('headless/') || /(?:^|\/)resources\/app(?:\.asar)?\//i.test(name) || /(?:^|\/)Resources\/app(?:\.asar)?\//.test(name) || distributionFiles.has(name);
+  if (mode === 'source' || mode === 'installer-resources') return true;
+  return name.startsWith('headless/') || /(?:^|\/)resources\/app(?:\.asar)?\//i.test(name) || /(?:^|\/)Contents\/(?:Info\.plist|(?:Frameworks|Resources)\/[^/]*[Uu]pdat)/.test(name) || /^desktop\/(?:AppRun|[^/]+\.desktop)$/.test(name) || distributionFiles.has(name);
 }
 
 function inspectGalleryPng(data) {
@@ -162,11 +162,13 @@ function asarEntries(buffer, parent) {
   if (16 + jsonSize > base || base > buffer.length) throw new Error('invalid asar header size');
   const header = JSON.parse(buffer.subarray(16, 16 + jsonSize).toString('utf8'));
   const entries = [];
-  function visit(files, prefix = '') {
+  function visit(files, prefix = '', depth = 0) {
+    if (depth > 64) throw new Error('asar tree nesting limit exceeded');
     for (const [segment, entry] of Object.entries(files)) {
       const name = checkedName(`${prefix}${segment}`);
-      if (entry.files) visit(entry.files, `${name}/`);
-      else if (entry.link) checkLink(name, entry.link);
+      if (entry.files) visit(entry.files, `${name}/`, depth + 1);
+      else if (entry.link) { checkLink(name, entry.link); entries.push({ name: `${parent}/${name}`, link: true, target: entry.link }); }
+      else if (entry.unpacked) entries.push({ name: `${parent}/${name}`, unpacked: true });
       else if (!entry.unpacked) {
         const start = base + Number(entry.offset), size = entry.size;
         if (!Number.isSafeInteger(start) || !Number.isSafeInteger(size) || start < base || size < 0 || start + size > buffer.length) throw new Error('invalid asar entry size');
@@ -180,7 +182,16 @@ function asarEntries(buffer, parent) {
 }
 
 export async function verifyRelease(mode, target, options = {}) {
-  if (!['source', 'artifact'].includes(mode)) throw new Error('use source or artifact mode');
+  if (!['source', 'artifact', 'app', 'appimage', 'installer-resources'].includes(mode)) throw new Error('use a supported release inspection mode');
+  const application = mode === 'app' || mode === 'appimage';
+  const installerResources = mode === 'installer-resources';
+  let resourceNames;
+  if (installerResources) {
+    if (!Array.isArray(options.expectedPaths) || !Object.isFrozen(options.expectedPaths) || !options.expectedPaths.length || options.expectedPaths.length > 128 || options.expectedPaths.some(name => typeof name !== 'string' || checkedName(name) !== name || name.length > 240) || new Set(options.expectedPaths).size !== options.expectedPaths.length) throw new Error('Installer resources require a fixed exact inventory.');
+    resourceNames = [...options.expectedPaths].sort();
+  }
+  const platform = application ? options.platform || process.platform : undefined;
+  if (application && (!['win32', 'darwin', 'linux'].includes(platform) || mode === 'appimage' && platform !== 'linux')) throw new Error('unsupported application audit platform');
   const denylist = options.privateTerms || [];
   if (!Array.isArray(denylist) || denylist.some(value => typeof value !== 'string' || value.length < 3)) throw new Error('private denylist must contain strings of at least three characters');
   const findings = [];
@@ -194,33 +205,62 @@ export async function verifyRelease(mode, target, options = {}) {
   const stat = await fs.lstat(root);
   let entries;
   if (stat.isDirectory()) entries = await directoryEntries(root, mode);
-  else if (mode === 'artifact' && stat.isFile()) {
+  else if (['artifact', 'app'].includes(mode) && stat.isFile()) {
     const raw = await fs.readFile(root);
     if (/\.zip$/i.test(root)) entries = zipEntries(raw);
     else if (/\.(?:tar\.gz|tgz)$/i.test(root)) entries = tarEntries(gunzipSync(raw, { maxOutputLength: maximumExpandedBytes }));
     else if (/\.tar$/i.test(root)) entries = tarEntries(raw);
     else throw new Error('artifact must be an expanded distribution, .zip, .tar, or .tar.gz');
-    entries = stripContainer(entries);
+    if (mode === 'artifact') entries = stripContainer(entries);
   } else throw new Error('invalid inspection target');
+  if (installerResources) {
+    const actual = entries.filter(entry => !entry.directory).map(entry => entry.name).sort();
+    if (entries.some(entry => entry.link || entry.directory && !resourceNames.some(name => name.startsWith(`${entry.name}/`))) || JSON.stringify(actual) !== JSON.stringify(resourceNames)) throw new Error('Installer resource inventory mismatch.');
+    entries = entries.map(entry => ({ ...entry, name: `desktop/${entry.name}` }));
+  }
+  // App-only inspection deliberately has its own required structure. It does not
+  // pretend that the installer payload contains the portable headless runtime.
+  if (application) {
+    const rawNames = new Set(entries.map(entry => entry.name));
+    const resources = platform === 'darwin' ? 'PutioManager.app/Contents/Resources/app' : 'resources/app';
+    const executable = platform === 'darwin' ? 'PutioManager.app/Contents/MacOS/PutioManager' : platform === 'win32' ? 'PutioManager.exe' : (rawNames.has('putio-manager') ? 'putio-manager' : 'PutioManager');
+    for (const required of [executable]) if (!rawNames.has(required)) add(required, 'application-runtime-missing');
+    if (!rawNames.has(`${resources}/package.json`) && !rawNames.has(`${resources}.asar`)) add(resources, 'application-payload-missing');
+    if (!rawNames.has(`${resources}/dist/desktop/main.js`) && !rawNames.has(`${resources}.asar`)) add(resources, 'application-entrypoint-missing');
+    if (mode === 'appimage' && !rawNames.has('AppRun')) add('AppRun', 'appimage-launcher-missing');
+    entries = entries.map(entry => ({ ...entry, name: `desktop/${entry.name}` }));
+  }
+  const seenNames = new Set();
+  for (const entry of entries) { if (seenNames.has(entry.name)) throw new Error('duplicate archive entry'); seenNames.add(entry.name); }
   let files = 0, bytes = 0;
-  async function inspect(entry) {
+  const inspectedNames = new Set();
+  async function inspect(entry, depth = 0) {
+    if (depth > 8) throw new Error('nested artifact limit exceeded');
     const { name } = entry;
     const segments = name.split('/'), top = segments[0];
     const forbidden = segments.some(part => privateSegments.test(part)) || privateNames.test(segments.at(-1)) || /^docs\/(?:agents|superpowers)(?:\/|$)/i.test(name);
     if (forbidden) { add(name, 'private-runtime-or-operator-file'); return; }
     if (mode === 'source' && !sourceRoots.has(top) && !sourceFiles.has(name)) add(name, 'unexpected-source-input');
     const galleryEntry = ['docs', 'docs/images'].includes(name) || galleryPath.test(name);
-    if (mode === 'artifact' && !distributionRoots.has(top) && !distributionFiles.has(name) && !galleryEntry) add(name, 'unexpected-distribution-input');
+    if (mode !== 'source' && !distributionRoots.has(top) && !distributionFiles.has(name) && !galleryEntry) add(name, 'unexpected-distribution-input');
     if (entry.link) {
       checkLink(name, entry.target);
       if (mode === 'source') add(name, 'source-symbolic-link');
       for (const term of denylist) if (`${name}/${entry.target}`.toLowerCase().includes(term.toLowerCase())) add(name, 'private-denylist-path');
       return;
     }
-    if (entry.directory) return;
+    if (entry.directory || entry.unpacked) return;
     const data = entry.data || await fs.readFile(entry.filename);
+    inspectedNames.add(name.replace(/\.asar\//g, '/'));
     files++; bytes += data.length;
     if (bytes > maximumExpandedBytes) throw new Error('expanded inspection limit exceeded');
+    if (application) {
+      const packagePath = platform === 'darwin' ? 'desktop/PutioManager.app/Contents/Resources/app/package.json' : 'desktop/resources/app/package.json';
+      if (name.replace(/\.asar\//g, '/') === packagePath) {
+        try { if (JSON.parse(data.toString('utf8')).name !== 'putio-manager') add(name, 'application-identity-mismatch'); }
+        catch { add(name, 'application-identity-invalid'); }
+      }
+    }
     if (galleryPath.test(name) && inspectGalleryPng(data)) add(name, 'gallery-image-metadata');
     const ascii = data.toString('latin1');
     const lowerAscii = denylist.length ? ascii.toLowerCase() : '';
@@ -233,10 +273,10 @@ export async function verifyRelease(mode, target, options = {}) {
     if (/(?<![A-Za-z0-9_])(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{30,}|AKIA[A-Z0-9]{16})(?![A-Za-z0-9_])/.test(ascii)) add(name, 'credential-token-shape');
     if (/-----BEGIN (?:RSA |OPENSSH |EC |DSA )?PRIVATE KEY-----[\r\n]+[A-Za-z0-9+/=\r\n]{80,}-----END/.test(ascii)) add(name, 'private-key-content');
     if (/\.asar$/i.test(name)) {
-      for (const child of asarEntries(data, name)) await inspect(child);
+      for (const child of asarEntries(data, name)) await inspect(child, depth + 1);
       return;
     }
-    if (!isAuthored(name, mode) || (!textExtension.test(name) && !['LICENSE', 'NOTICE'].includes(segments.at(-1))) || data.includes(0)) return;
+    if (!isAuthored(name, mode) || (!textExtension.test(name) && !['LICENSE', 'NOTICE', 'AppRun'].includes(segments.at(-1))) || data.includes(0)) return;
     const lines = data.toString('utf8').split(/\r?\n/);
     for (let index = 0; index < lines.length; index++) {
       const line = lines[index];
@@ -251,8 +291,12 @@ export async function verifyRelease(mode, target, options = {}) {
     if (/\.map$/i.test(name) && /"sourcesContent"\s*:/.test(text)) add(name, 'embedded-source-map');
   }
   for (const entry of entries) await inspect(entry);
+  if (application) {
+    const appRoot = platform === 'darwin' ? 'desktop/PutioManager.app/Contents/Resources/app' : 'desktop/resources/app';
+    for (const name of [`${appRoot}/package.json`, `${appRoot}/dist/desktop/main.js`]) if (!inspectedNames.has(name)) add(name, 'application-content-missing');
+  }
   const names = new Set(entries.map(entry => entry.name));
-  const required = mode === 'source' ? ['LICENSE', 'package.json'] : ['README.md', 'LICENSE-PutioManager.txt', 'LICENSE-Node.txt', 'launch.cjs'];
+  const required = mode === 'source' ? ['LICENSE', 'package.json'] : application || installerResources ? [] : ['README.md', 'LICENSE-PutioManager.txt', 'LICENSE-Node.txt', 'launch.cjs'];
   for (const name of required) if (!names.has(name)) add(name, 'required-release-file-missing');
   if (mode === 'artifact') {
     if (!names.has('node') && !names.has('node.exe')) add('node', 'bundled-runtime-missing');
@@ -264,13 +308,17 @@ export async function verifyRelease(mode, target, options = {}) {
 async function main() {
   const args = process.argv.slice(2), mode = args.shift();
   const target = args[0] && !args[0].startsWith('--') ? args.shift() : '.';
-  let privateTerms = [];
-  if (args.length) {
-    if (args.length !== 2 || args[0] !== '--private-denylist') throw new Error('unknown option');
-    const content = await fs.readFile(args[1], 'utf8');
-    privateTerms = content.trim().startsWith('[') ? JSON.parse(content) : content.split(/\r?\n/).map(value => value.trim()).filter(Boolean);
+  let privateTerms = [], platform;
+  while (args.length) {
+    const option = args.shift(), value = args.shift();
+    if (!value) throw new Error('unknown option');
+    if (option === '--platform' && !platform) platform = value;
+    else if (option === '--private-denylist' && !privateTerms.length) {
+      const content = await fs.readFile(value, 'utf8');
+      privateTerms = content.trim().startsWith('[') ? JSON.parse(content) : content.split(/\r?\n/).map(term => term.trim()).filter(Boolean);
+    } else throw new Error('unknown option');
   }
-  const result = await verifyRelease(mode, target, { privateTerms });
+  const result = await verifyRelease(mode, target, { privateTerms, platform });
   console.log(JSON.stringify(result, null, 2));
   if (!result.ok) process.exitCode = 1;
 }

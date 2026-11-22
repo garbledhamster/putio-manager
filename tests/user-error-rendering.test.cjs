@@ -12,7 +12,7 @@ test('agent startup rejection returns controlled JSON without raw diagnostics',(
   const handler=source.slice(start+'}).catch('.length,end).replace(/;\s*$/,'').slice(0,-1);
   const output=[],exits=[];
   const {safeAgentError}=require('../dist/server/agent-cli.js');
-  const context={agentMode:true,console:{log(value){output.push(value)},error(){assert.fail('Raw diagnostic output')}},electron_1:{app:{exit(code){exits.push(code)}}},agent_cli_1:{safeAgentError}};
+  const context={appUpdateMode:false,agentMode:true,console:{log(value){output.push(value)},error(){assert.fail('Raw diagnostic output')}},electron_1:{app:{exit(code){exits.push(code)}}},agent_cli_1:{safeAgentError}};
   const reject=vm.runInNewContext('('+handler+')',context);
   reject(new Error('PRIVATE_TOKEN_SENTINEL /private/path?token=secret'));
   assert.deepEqual(exits,[1]);

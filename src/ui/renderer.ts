@@ -4,6 +4,7 @@ import { icon } from "./icons.js";
 import { makeParagraphsCopyable, setCopyableMessage } from "./copy-message.js";
 import { canCheckRules, requestRuleCheck } from "./rule-check.js";
 import { presentUserError } from "./user-messages.js";
+import type { DesktopUpdateStatus, DesktopUpdateError } from "../desktop/update-types";
 
 type View = "files" | "downloads" | "transfers" | "rules" | "settings";
 type Field = {
@@ -51,6 +52,8 @@ let search: {
   pending: boolean;
   errors: string[];
 } | undefined;
+let desktopUpdate: DesktopUpdateStatus | undefined;
+let desktopUpdatePending = false;
 let desktopIntegration: Awaited<ReturnType<typeof api.getDesktopIntegration>> | undefined;
 const children = new Map<string, RemoteFile[]>(),
   expanded = new Set<string>();
@@ -1149,6 +1152,107 @@ function button(label: string, id: string, fn: () => void, cls = "secondary") {
   b.addEventListener("click", fn);
   return b;
 }
+// IPC data is validated at the display boundary. Copy comes from controlled phase
+// and error vocabularies, never helper diagnostics or release metadata.
+function safeDesktopUpdateStatus(value: unknown): DesktopUpdateStatus | undefined {
+  if (!value || typeof value !== "object") return;
+  const item = value as Record<string, unknown>;
+  const phases = ["idle", "checking", "current", "available", "downloading", "verifying", "ready", "preparing", "installing", "updated", "cancelled", "failed", "unavailable"];
+  const version = (input: unknown): input is string => typeof input === "string" && input.length <= 64 && /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(input);
+  if (item.schema !== 1 || item.source !== "github" || typeof item.platform !== "string" || !["windows", "macos", "linux", "unsupported"].includes(item.platform) || typeof item.phase !== "string" || !phases.includes(item.phase) || typeof item.capability !== "string" || !["automatic", "unavailable"].includes(item.capability) || !version(item.currentVersion)) return;
+  const phase = item.phase as DesktopUpdateStatus["phase"];
+  const capability = item.capability as DesktopUpdateStatus["capability"];
+  const copy: Record<DesktopUpdateStatus["phase"], [string, string?]> = {
+    idle: ["Check GitHub for a newer desktop version.", "Select Check for updates."],
+    checking: ["Checking the published GitHub release.", "Wait for the update check to finish."],
+    current: ["This desktop version is up to date."],
+    available: ["A newer desktop version is available.", capability === "automatic" ? "Select Update and restart when you are ready." : "Install the updating edition from the project's GitHub release page."],
+    downloading: ["Downloading the desktop update.", "You can cancel before installation starts."],
+    verifying: ["Verifying the downloaded update.", "You can cancel before installation starts."],
+    ready: ["The verified update is ready.", "The desktop will restart to install the update."],
+    preparing: ["Saving current work before the desktop restarts.", "Wait for the desktop to restart."],
+    installing: ["Installing the verified update and restarting the desktop.", "Wait for the desktop to restart."],
+    updated: ["The installed desktop version has been verified."],
+    cancelled: ["The update operation was cancelled.", "Check for updates when you are ready."],
+    failed: ["The app could not finish this update operation.", "Check for updates again. Ask your administrator if the problem continues."],
+    unavailable: ["This copy cannot install updates automatically.", "Install the updating edition from the project's GitHub release page."],
+  };
+  const errors: Record<DesktopUpdateError, [string, string]> = {
+    network: ["The app cannot contact the update service.", "Check your internet connection, then check for updates again."],
+    "release-invalid": ["The release information did not pass the update checks.", "Try again later. The previous application is still installed."],
+    "signature-invalid": ["The update signature could not be verified.", "Do not install this download. Check for updates again later."],
+    "download-invalid": ["The downloaded update did not pass verification.", "Check your connection and free space, then try again."],
+    "storage-unavailable": ["The app cannot save the update.", "Make space in the application cache, then try again."],
+    "permission-required": ["The operating system did not allow this update.", "Use the normal operating-system permission prompt, or ask your administrator for help."],
+    "app-busy": ["Another update operation is still running.", "Wait for it to finish, or cancel its download."],
+    "shutdown-unconfirmed": ["The app could not safely finish its current work.", "The update was not started. Restart the app after resolving the download warning."],
+    "installer-busy": ["Windows Installer is busy with another installation.", "Finish that installation, then try this update again."],
+    "installer-cancelled": ["The update installation was cancelled.", "Start the app again and retry when you are ready."],
+    "installer-failed": ["The operating system could not finish the installation.", "Start the previous app and retry. Ask your administrator if the problem continues."],
+    "restart-required": ["The update needs an operating-system restart to finish.", "Save your other work and restart the computer when you are ready."],
+    "unsupported-installation": copy.unavailable as [string, string],
+    "update-failed": copy.failed as [string, string],
+  };
+  const errorCode = phase === "failed" && typeof item.errorCode === "string" && Object.hasOwn(errors, item.errorCode) ? item.errorCode as DesktopUpdateError : undefined;
+  const [message, nextAction] = errorCode ? errors[errorCode] : copy[phase];
+  return {
+    schema: 1, source: "github", platform: item.platform as DesktopUpdateStatus["platform"],
+    currentVersion: item.currentVersion, availableVersion: version(item.availableVersion) ? item.availableVersion : undefined,
+    capability, phase, message, nextAction, errorCode,
+    progressPercent: typeof item.progressPercent === "number" && Number.isFinite(item.progressPercent) ? Math.max(0, Math.min(100, item.progressPercent)) : undefined,
+    restartRequired: item.restartRequired === true,
+  };
+}
+function receiveDesktopUpdate(value: unknown) {
+  const next = safeDesktopUpdateStatus(value);
+  if (!next) return;
+  desktopUpdate = next;
+  // Status events cannot refresh another settings form or change engine/profile state.
+  if (state && current === "settings" && settingsTab === "updates" && !search) render();
+}
+async function requestDesktopUpdate(action: "check" | "install" | "cancel" | "status") {
+  if (desktopUpdatePending && action !== "cancel") return;
+  desktopUpdatePending = true;
+  if (state && current === "settings" && settingsTab === "updates" && !search) render();
+  try {
+    const status = await (action === "check" ? api.checkDesktopUpdate() : action === "install" ? api.installDesktopUpdate() : action === "cancel" ? api.cancelDesktopUpdate() : api.getDesktopUpdateStatus());
+    if (!safeDesktopUpdateStatus(status)) throw new Error("Invalid update status");
+    receiveDesktopUpdate(status);
+  } catch {
+    // Updater rejections must not pass raw diagnostics to the general notice area.
+    desktopUpdate = safeDesktopUpdateStatus({schema: 1, source: "github", platform: desktopUpdate?.platform ?? "unsupported", currentVersion: desktopUpdate?.currentVersion ?? "0.0.0", capability: desktopUpdate?.capability ?? "unavailable", phase: "failed", errorCode: "update-failed"});
+  } finally {
+    desktopUpdatePending = false;
+    if (state && current === "settings" && settingsTab === "updates" && !search) render();
+  }
+}
+function renderDesktopUpdates(content: HTMLElement) {
+  content.append(node("h2", "Desktop updates"));
+  const scope = node("p", "Updates apply to this desktop app. Remote server software is managed separately.");
+  scope.className = "hint"; content.append(scope);
+  const status = desktopUpdate;
+  const installed = node("p", `Installed version: ${status?.currentVersion ?? "Loading…"}`); installed.id = "updates-installed";
+  const available = node("p", `Available version: ${status?.availableVersion ?? (status?.phase === "current" ? "No newer version" : "Not checked")}`); available.id = "updates-available";
+  const live = node("div"); live.id = "updates-status"; live.setAttribute("role", "status"); live.setAttribute("aria-live", "polite"); live.setAttribute("aria-atomic", "true");
+  const message = node("p", status?.message ?? "Loading desktop update status…"); message.id = "updates-message";
+  live.append(message);
+  if (status?.nextAction) { const next = node("p", status.nextAction); next.id = "updates-next-action"; live.append(next); }
+  content.append(installed, available, live);
+  const busy = !!status && ["checking", "downloading", "verifying", "ready", "preparing", "installing"].includes(status.phase);
+  if (status && ["downloading", "verifying", "ready", "installing"].includes(status.phase) && status.progressPercent !== undefined) {
+    const row = node("div"); row.className = "download-progress";
+    const progress = node("progress"); progress.id = "updates-progress"; progress.max = 100; progress.value = status.progressPercent; progress.setAttribute("aria-label", "Desktop update progress");
+    row.append(progress, node("span", `${Math.round(status.progressPercent)}%`)); content.append(row);
+  }
+  const controls = node("div"); controls.className = "field-row";
+  const check = button("Check for updates", "updates-check", () => void requestDesktopUpdate("check")); check.disabled = busy || desktopUpdatePending; controls.append(check);
+  if (status?.capability === "automatic" && status.availableVersion && ["available", "failed", "cancelled"].includes(status.phase)) {
+    const install = button("Update and restart", "updates-install", () => void requestDesktopUpdate("install"), "button"); install.disabled = desktopUpdatePending; controls.append(install);
+    content.append(node("p", "Update and restart downloads and verifies the update, saves current work, then restarts this app."));
+  }
+  if (status && ["downloading", "verifying", "ready"].includes(status.phase)) controls.append(button("Cancel download", "updates-cancel", () => void requestDesktopUpdate("cancel")));
+  content.append(controls);
+}
 function renderSettings() {
   title("Settings");
   const layout = node("div");
@@ -1160,6 +1264,7 @@ function renderSettings() {
     ["general", "General"],
     ["downloads", "Downloads"],
     ["interface", "Interface"],
+    ["updates", "Updates"],
   ]) {
     const b = button(label, `settings-tab-${id}`, () => {
       settingsTab = id;
@@ -1345,7 +1450,8 @@ function renderSettings() {
       }, "Magnet registration updated.")));
     }
   }
-  if (settingsTab !== "general" && settingsTab !== "setup") content.append(
+  if (settingsTab === "updates") renderDesktopUpdates(content);
+  if (settingsTab === "downloads" || settingsTab === "interface") content.append(
     button(
       "Save settings",
       "settings-save",
@@ -1647,6 +1753,9 @@ api.onMagnetDestination(id => {
   dialog.showModal();
   void browse();
 });
+
+api.onDesktopUpdateStatus(receiveDesktopUpdate);
+void requestDesktopUpdate("status");
 
 api.onState((next) => {
   const previous = state;

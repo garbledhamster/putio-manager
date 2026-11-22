@@ -146,6 +146,41 @@ export async function runUiScenario(window: BrowserWindow, remote: { url: string
   await new Promise(resolve => setTimeout(resolve, 1500));
   await checkMasks();
   await documentationCapture("01-setup");
+  // Desktop updates are independent of the generated Remote/account fixture.
+  // The smoke updater checks a fake release and fails verification before any
+  // engine shutdown, installer handoff or application restart can be attempted.
+  await click("#settings-tab-updates");
+  await click("#updates-check");
+  await waitFor("Boolean(document.querySelector('#updates-install') && !document.querySelector('#updates-install').disabled)", "generated desktop update available");
+  const updateFixture = await evaluate<any>("window.putio.getDesktopUpdateStatus()");
+  if (updateFixture.phase !== "available" || !updateFixture.availableVersion) throw new Error("Smoke updater did not return a generated release.");
+  const originalSnapshot = await evaluate<any>("window.putio.getState()");
+  const offlineSnapshot = structuredClone(originalSnapshot);
+  offlineSnapshot.target = {mode:"remote", label:"Generated unavailable server", status:"error"};
+  window.webContents.send("state", offlineSnapshot);
+  await waitFor("document.querySelector('#engine-status')?.textContent.includes('Remote · Unavailable')", "generated Remote offline status");
+  if (!await evaluate<boolean>("Boolean(document.querySelector('#updates-check') && !document.querySelector('#updates-check').disabled && document.querySelector('#updates-install') && !document.querySelector('#settings-save'))")) throw new Error("Offline Remote disabled desktop updates or exposed settings saving.");
+  await checkLayout("desktop updates while Remote offline");
+  await documentationCapture("09-software-updates");
+  window.setSize(640, 560); await new Promise(resolve => setTimeout(resolve, 250));
+  await checkLayout("narrow desktop updates"); await capture("updates-narrow");
+  window.setSize(892, 510); await new Promise(resolve => setTimeout(resolve, 250));
+  await click("#updates-install");
+  await waitFor("document.querySelector('#updates-message')?.textContent.includes('signature could not be verified')", "generated update verification rejection");
+  if (!await evaluate<boolean>("document.querySelector('#updates-next-action')?.textContent.includes('Do not install this download') && document.querySelector('#updates-status')?.getAttribute('aria-live') === 'polite'")) throw new Error("Rejected update did not show a controlled next action and live status.");
+  window.webContents.send("desktop-update-status", {...updateFixture, phase:"downloading", progressPercent:42, message:"PRIVATE_DIAGNOSTIC_SENTINEL /fixture/private-path", nextAction:"PRIVATE_DIAGNOSTIC_SENTINEL"});
+  await waitFor("document.querySelector('#updates-progress')?.value === 42 && Boolean(document.querySelector('#updates-cancel'))", "generated download progress and Cancel");
+  const safeUpdateCopy = await evaluate<boolean>("!document.querySelector('#settings-content').textContent.includes('PRIVATE_DIAGNOSTIC_SENTINEL') && !document.querySelector('#settings-content').textContent.includes('/fixture/private-path')");
+  if (!safeUpdateCopy) throw new Error("Updater displayed raw diagnostics.");
+  await click("#updates-cancel");
+  await waitFor("document.querySelector('#updates-message')?.textContent.includes('cancelled') && !document.querySelector('#updates-cancel')", "generated update cancellation");
+  for (const phase of ["preparing", "installing"] as const) {
+    window.webContents.send("desktop-update-status", {...updateFixture, phase, progressPercent:100});
+    await waitFor("Boolean(document.querySelector('#updates-check')?.disabled) && !document.querySelector('#updates-cancel') && !document.querySelector('#updates-install')", `no cancellation during ${phase}`);
+  }
+  window.webContents.send("desktop-update-status", await evaluate("window.putio.getDesktopUpdateStatus()"));
+  window.webContents.send("state", originalSnapshot);
+  if (window.isVisible()) throw new Error("Smoke window must remain hidden.");
   await click("#nav-files");
   await checkLayout("default Files");
   await capture("files-default");

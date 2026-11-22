@@ -4,6 +4,15 @@ const invoke = (channel: string, ...args: unknown[]) =>
   ipcRenderer.invoke(channel, ...args);
 const bridge: PutioBridge = {
   getState: () => invoke("getState"),
+  getDesktopUpdateStatus: () => invoke("getDesktopUpdateStatus"),
+  checkDesktopUpdate: () => invoke("checkDesktopUpdate"),
+  installDesktopUpdate: () => invoke("installDesktopUpdate"),
+  cancelDesktopUpdate: () => invoke("cancelDesktopUpdate"),
+  onDesktopUpdateStatus: listener => {
+    const handler = (_event: Electron.IpcRendererEvent, status: Parameters<typeof listener>[0]) => listener(status);
+    ipcRenderer.on("desktop-update-status", handler);
+    return () => ipcRenderer.removeListener("desktop-update-status", handler);
+  },
   getDesktopIntegration: () => invoke("getDesktopIntegration"),
   setMagnetRegistration: enabled => invoke("setMagnetRegistration", enabled),
   connectAccount: () => invoke("connectAccount"),

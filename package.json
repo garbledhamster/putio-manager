@@ -1,6 +1,6 @@
 {
   "name": "putio-manager",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "private": true,
   "description": "Cross-platform put.io desktop manager",
   "main": "dist/desktop/main.js",
@@ -12,10 +12,10 @@
     "test:rules": "node --test tests/rules.test.cjs",
     "test:settings": "node --test tests/settings.test.cjs",
     "test:device-auth": "node --test tests/device-auth.test.cjs",
-    "test": "npm run test:api && npm run test:downloads && npm run test:rules && npm run test:settings && npm run test:integration && npm run test:device-auth && npm run test:engine && npm run test:remote && npm run test:platform && npm run test:staged && npm run test:ui-messages && npm run test:agent",
+    "test": "npm run test:api && npm run test:downloads && npm run test:rules && npm run test:settings && npm run test:integration && npm run test:device-auth && npm run test:engine && npm run test:remote && npm run test:platform && npm run test:staged && npm run test:ui-messages && npm run test:agent && npm run test:release && npm run test:updates",
     "test:ui": "electron . --smoke-test",
     "start": "electron .",
-    "package": "electron-packager . PutioManager --out=release --overwrite --ignore=\"^/(?!dist($|/)|package.json$)\" --protocol=magnet --protocol-name=\"Magnet links\" --icon=src/ui/branding/putio-manager",
+    "package": "node scripts/package-native.mjs",
     "verify": "npm run typecheck && npm run build && npm test && npm run test:ui",
     "test:integration": "node --test tests/integration.test.cjs",
     "test:package": "node scripts/test-package.mts",
@@ -31,14 +31,19 @@
     "verify:public": "node scripts/verify-public-release.mjs source",
     "test:staged": "node --test tests/staged-delivery-tracer.test.cjs tests/staged-delivery-acceptance.test.cjs tests/staged-delivery-close.test.cjs tests/staged-delivery-helper.test.cjs && node --test tests/staged-delivery-resources.test.cjs && node --test tests/staged-delivery-engine-resources.test.cjs",
     "test:ui-messages": "node --test tests/copy-messages.test.cjs",
-    "test:agent": "node --test tests/agent-cli.test.cjs tests/user-messages.test.cjs tests/user-error-rendering.test.cjs tests/storage-status.test.cjs tests/service-cli.test.cjs tests/launcher.test.cjs"
+    "test:agent": "node --test tests/agent-cli.test.cjs tests/user-messages.test.cjs tests/user-error-rendering.test.cjs tests/storage-status.test.cjs tests/service-cli.test.cjs tests/launcher.test.cjs",
+    "test:release": "node --test tests/release-pipeline.test.mjs tests/release-privacy.test.mjs tests/release-publication.test.mjs",
+    "test:updates": "node --test tests/desktop-updates.test.cjs tests/platform-updates.test.cjs tests/windows-installer.test.cjs tests/windows-update-runtime.test.cjs tests/update-settings-renderer.test.cjs tests/update-cli.test.cjs"
   },
   "devDependencies": {
     "@electron/packager": "20.3.0",
     "@types/node": "24.10.13",
     "electron": "45.4.1",
+    "electron-builder": "26.18.0",
     "typescript": "7.0.2"
   },
-  "license": "GPL-3.0-only"
+  "license": "GPL-3.0-only",
+  "overrides": {
+    "minimatch@>=7.0.0 <11.0.1": "11.0.9"
+  }
 }
-

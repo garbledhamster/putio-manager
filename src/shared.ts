@@ -1,3 +1,4 @@
+import type { DesktopUpdateStatus } from "./desktop/update-types";
 export interface RemoteFile {
   id: string;
   parentId: string;
@@ -91,6 +92,11 @@ export interface Snapshot {
   nextRuleRuns: Record<string, string>;
 }
 export interface PutioBridge {
+  getDesktopUpdateStatus(): Promise<DesktopUpdateStatus>;
+  checkDesktopUpdate(): Promise<DesktopUpdateStatus>;
+  installDesktopUpdate(): Promise<DesktopUpdateStatus>;
+  cancelDesktopUpdate(): Promise<DesktopUpdateStatus>;
+  onDesktopUpdateStatus(listener: (status: DesktopUpdateStatus) => void): () => void;
   getState(): Promise<Snapshot>;
   connectAccount(): Promise<Snapshot>;
   getRemoteConnection(): Promise<{ url: string; label: string; hasCredential: boolean }>;
